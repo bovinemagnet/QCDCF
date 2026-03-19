@@ -6,6 +6,7 @@ import com.paulsnow.qcdcf.postgres.metadata.TableMetadata;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import com.paulsnow.qcdcf.runtime.service.ConnectorService;
 import com.paulsnow.qcdcf.runtime.service.MetricsService;
+import com.paulsnow.qcdcf.runtime.service.ReplicationHealthService;
 import com.paulsnow.qcdcf.runtime.service.SnapshotMonitorService;
 import io.quarkus.qute.Template;
 import io.quarkus.qute.TemplateInstance;
@@ -107,6 +108,25 @@ public class DashboardResource {
     Template snapshotHistoryFragment;
 
     @Inject
+    Template replication;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/replicationHealth")
+    Template replicationHealthFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/replicationSlotDetail")
+    Template replicationSlotDetailFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/replicationConfig")
+    Template replicationConfigFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/replicationDanger")
+    Template replicationDangerFragment;
+
+    @Inject
     ConnectorService connectorService;
 
     @Inject
@@ -114,6 +134,9 @@ public class DashboardResource {
 
     @Inject
     SnapshotMonitorService snapshotMonitorService;
+
+    @Inject
+    ReplicationHealthService replicationHealthService;
 
     @Inject
     ConnectorRuntimeConfig config;
@@ -349,6 +372,58 @@ public class DashboardResource {
                 .data("snapshotHistory", snapshotMonitorService.snapshotHistory());
     }
 
+    // ── Replication health page + fragments ─────────────────────────────
+
+    /**
+     * Replication health monitoring page.
+     */
+    @GET
+    @Path("/replication")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance replicationPage() {
+        return buildReplicationData(replication);
+    }
+
+    /**
+     * Replication health cards fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/replication-health")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance replicationHealthFragment() {
+        return buildReplicationHealthData(replicationHealthFragment);
+    }
+
+    /**
+     * Replication slot detail fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/replication-slot")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance replicationSlotFragment() {
+        return buildReplicationSlotData(replicationSlotDetailFragment);
+    }
+
+    /**
+     * Replication configuration and lag history fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/replication-config")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance replicationConfigFragment() {
+        return buildReplicationConfigData(replicationConfigFragment);
+    }
+
+    /**
+     * Replication danger zone fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/replication-danger")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance replicationDangerFragment() {
+        return buildReplicationDangerData(replicationDangerFragment);
+    }
+
     // ── Private helpers ─────────────────────────────────────────────────
 
     /**
@@ -494,5 +569,88 @@ public class DashboardResource {
             case "SNAPSHOTTING" -> "text-blue-400";
             default -> "text-gray-400";
         };
+    }
+
+    /**
+     * Builds all data required for the full replication page.
+     */
+    private TemplateInstance buildReplicationData(Template template) {
+        var slotHealth = replicationHealthService.getSlotHealth();
+        var replicationStats = replicationHealthService.getReplicationStats();
+        long lagBytes = slotHealth != null ? slotHealth.walLagBytes() : 0;
+        boolean highLag = ReplicationHealthService.isHighLag(lagBytes);
+        String lagColour = ReplicationHealthService.lagColour(lagBytes);
+        String sparklineColour = highLag ? COLOUR_RED : COLOUR_EMERALD;
+
+        return template
+                .data("slotHealth", slotHealth)
+                .data("replicationStats", replicationStats)
+                .data("lagColour", lagColour)
+                .data("highLag", highLag)
+                .data("slotName", config.source().slotName())
+                .data("walLagSparkline", SparklineGenerator.generate(
+                        replicationHealthService.walLagHistory(), SPARK_SM_W, SPARK_SM_H, sparklineColour))
+                .data("walLagLargeSparkline", SparklineGenerator.generate(
+                        replicationHealthService.walLagHistory(), SPARK_LG_W, SPARK_LG_H, sparklineColour));
+    }
+
+    /**
+     * Builds data for the replication health cards fragment.
+     */
+    private TemplateInstance buildReplicationHealthData(Template template) {
+        var slotHealth = replicationHealthService.getSlotHealth();
+        var replicationStats = replicationHealthService.getReplicationStats();
+        long lagBytes = slotHealth != null ? slotHealth.walLagBytes() : 0;
+        String sparklineColour = ReplicationHealthService.isHighLag(lagBytes) ? COLOUR_RED : COLOUR_EMERALD;
+
+        return template
+                .data("slotHealth", slotHealth)
+                .data("replicationStats", replicationStats)
+                .data("lagColour", ReplicationHealthService.lagColour(lagBytes))
+                .data("walLagSparkline", SparklineGenerator.generate(
+                        replicationHealthService.walLagHistory(), SPARK_SM_W, SPARK_SM_H, sparklineColour));
+    }
+
+    /**
+     * Builds data for the replication slot detail fragment.
+     */
+    private TemplateInstance buildReplicationSlotData(Template template) {
+        var slotHealth = replicationHealthService.getSlotHealth();
+        long lagBytes = slotHealth != null ? slotHealth.walLagBytes() : 0;
+
+        return template
+                .data("slotHealth", slotHealth)
+                .data("lagColour", ReplicationHealthService.lagColour(lagBytes))
+                .data("slotName", config.source().slotName());
+    }
+
+    /**
+     * Builds data for the replication config and lag history fragment.
+     */
+    private TemplateInstance buildReplicationConfigData(Template template) {
+        var slotHealth = replicationHealthService.getSlotHealth();
+        var replicationStats = replicationHealthService.getReplicationStats();
+        long lagBytes = slotHealth != null ? slotHealth.walLagBytes() : 0;
+        boolean highLag = ReplicationHealthService.isHighLag(lagBytes);
+        String sparklineColour = highLag ? COLOUR_RED : COLOUR_EMERALD;
+
+        return template
+                .data("replicationStats", replicationStats)
+                .data("highLag", highLag)
+                .data("walLagLargeSparkline", SparklineGenerator.generate(
+                        replicationHealthService.walLagHistory(), SPARK_LG_W, SPARK_LG_H, sparklineColour));
+    }
+
+    /**
+     * Builds data for the replication danger zone fragment.
+     */
+    private TemplateInstance buildReplicationDangerData(Template template) {
+        var slotHealth = replicationHealthService.getSlotHealth();
+        long lagBytes = slotHealth != null ? slotHealth.walLagBytes() : 0;
+
+        return template
+                .data("slotHealth", slotHealth)
+                .data("highLag", ReplicationHealthService.isHighLag(lagBytes))
+                .data("slotName", config.source().slotName());
     }
 }

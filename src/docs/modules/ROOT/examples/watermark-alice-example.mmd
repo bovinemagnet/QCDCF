@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant DB as PostgreSQL
+    participant WAL as WAL Stream
+    participant SNAP as Snapshot Reader
+    participant REC as Reconciliation Engine
+    participant SINK as Event Sink
+
+    Note over DB,SINK: Before snapshot: Alice (id=1, email=alice@example.com)
+
+    WAL-->>REC: INSERT order(id=99, customer_id=1) [LSN 1001]
+
+    Note over SNAP,REC: Snapshot chunk begins
+    SNAP->>DB: WRITE low watermark UUID=LOW-001
+    DB-->>WAL: watermark update event [LSN 1010]
+
+    SNAP->>DB: SELECT * FROM customer ORDER BY id LIMIT 100
+    DB-->>SNAP: Row: id=1, email=alice@example.com
+    DB-->>SNAP: Row: id=2, email=bob@example.com
+    DB-->>SNAP: Row: id=3, email=carol@example.com
+
+    Note over DB: Alice updates her email concurrently
+    DB-->>WAL: UPDATE customer id=1 email=alice@new.com [LSN 1015]
+
+    SNAP->>DB: WRITE high watermark UUID=HIGH-001
+    DB-->>WAL: watermark update event [LSN 1020]
+
+    Note over WAL,REC: WAL stream catches up to window
+    WAL-->>REC: low watermark LOW-001 observed → enter window mode
+    WAL-->>REC: UPDATE customer id=1 [LSN 1015] → remove id=1 from snapshot chunk
+    WAL-->>REC: high watermark HIGH-001 observed → close window
+
+    Note over REC,SINK: Emit reconciled result
+    REC-->>SINK: UPDATE customer id=1 email=alice@new.com [LOG event, newer]
+    REC-->>SINK: SNAPSHOT customer id=2 email=bob@example.com [survived]
+    REC-->>SINK: SNAPSHOT customer id=3 email=carol@example.com [survived]
+
+    Note over REC,SINK: id=1 snapshot row suppressed — log event is authoritative

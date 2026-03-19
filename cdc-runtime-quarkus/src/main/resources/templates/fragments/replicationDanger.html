@@ -1,0 +1,54 @@
+<h2 class="text-sm font-medium text-red-400 uppercase tracking-wider mb-4">Danger Zone</h2>
+<div class="space-y-4">
+    <p class="text-sm text-gray-300">
+        A stale replication slot prevents PostgreSQL from cleaning up WAL segments, potentially filling the disk.
+    </p>
+    {#if slotHealth != null}
+        {#if !slotHealth.active}
+        <div class="bg-red-900/40 border border-red-600 rounded-lg p-4">
+            <div class="flex items-start gap-3">
+                <span class="text-red-400 text-lg">&#9888;</span>
+                <div>
+                    <p class="text-sm font-bold text-red-400">Slot is inactive — WAL is accumulating!</p>
+                    <p class="text-xs text-red-300/70 mt-1">
+                        The replication slot <span class="font-mono">{slotHealth.slotName}</span> is not being consumed.
+                        PostgreSQL will retain all WAL segments since the slot's restart LSN
+                        (<span class="font-mono">{slotHealth.restartLsnHex}</span>).
+                    </p>
+                </div>
+            </div>
+        </div>
+        {/if}
+        {#if highLag}
+        <div class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4">
+            <div class="flex items-start gap-3">
+                <span class="text-yellow-400 text-lg">&#9888;</span>
+                <div>
+                    <p class="text-sm font-bold text-yellow-400">Significant WAL retention</p>
+                    <p class="text-xs text-yellow-300/70 mt-1">
+                        Current WAL lag is <span class="font-mono font-bold">{slotHealth.walLagFormatted}</span>.
+                        If lag continues to grow, disk space may be exhausted.
+                    </p>
+                </div>
+            </div>
+        </div>
+        {/if}
+        {#if !highLag && slotHealth.active}
+        <div class="bg-emerald-900/20 border border-emerald-800 rounded-lg p-4">
+            <div class="flex items-start gap-3">
+                <span class="text-emerald-400 text-lg">&#10003;</span>
+                <div>
+                    <p class="text-sm text-emerald-400">Replication slot is healthy</p>
+                    <p class="text-xs text-emerald-300/60 mt-1">
+                        Slot is active and WAL lag is within acceptable limits ({slotHealth.walLagFormatted}).
+                    </p>
+                </div>
+            </div>
+        </div>
+        {/if}
+    {#else}
+    <div class="bg-gray-700/30 border border-gray-600 rounded-lg p-4">
+        <p class="text-sm text-gray-500 italic">Unable to assess danger — database or slot unavailable.</p>
+    </div>
+    {/if}
+</div>

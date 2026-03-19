@@ -1,0 +1,22 @@
+plugins {
+    id 'java'
+    id 'io.quarkus'
+}
+
+dependencies {
+    implementation enforcedPlatform("${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
+    implementation project(':cdc-api-model')
+    implementation project(':cdc-core')
+    implementation project(':cdc-postgres')
+    implementation 'io.quarkus:quarkus-rest'
+    implementation 'io.quarkus:quarkus-rest-jackson'
+    implementation 'io.quarkus:quarkus-jdbc-postgresql'
+    implementation 'io.quarkus:quarkus-smallrye-health'
+    implementation 'io.quarkus:quarkus-arc'
+    implementation 'io.quarkus:quarkus-messaging'
+    implementation 'io.quarkus:quarkus-messaging-kafka'
+    implementation 'io.quarkus:quarkus-qute'
+
+    testImplementation 'io.quarkus:quarkus-junit5'
+    testImplementation project(':cdc-test-kit')
+}

@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant SNAP as SnapshotCoordinator
+    participant WM as WatermarkWriter
+    participant PG as PostgreSQL
+    participant SR as SnapshotReader
+    participant WAL as WAL Stream
+    participant REC as ReconciliationEngine
+    participant DEL as DeliveryCoordinator
+
+    SNAP->>WM: writeLowWatermark(windowId)
+    WM->>PG: UPDATE cdc_control.watermark SET value = lowUUID
+    SNAP->>SR: readChunk(table, keyRange, chunkSize)
+    SR->>PG: SELECT * FROM table WHERE pk > lastPk ORDER BY pk LIMIT n
+    PG-->>SR: chunk rows (READ COMMITTED)
+    SNAP->>WM: writeHighWatermark(windowId)
+    WM->>PG: UPDATE cdc_control.watermark SET value = highUUID
+
+    WAL-->>REC: low watermark event observed in WAL
+    Note over REC: Enter window mode — buffer log events
+    WAL-->>REC: log events between low and high watermark
+    REC->>REC: remove matching primary keys from chunk rows
+    WAL-->>REC: high watermark event observed in WAL
+    Note over REC: Window closed — emit merged output
+
+    REC-->>DEL: log events in window order
+    REC-->>DEL: surviving snapshot rows (no key collision)
+    DEL->>DEL: publish batch and advance WAL checkpoint

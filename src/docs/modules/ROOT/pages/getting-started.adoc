@@ -1,0 +1,128 @@
+= Getting Started
+Paul Snow
+:description: Quick start guide for building and running QCDCF locally.
+include::partial$_attributes.adoc[]
+
+This guide walks through the prerequisites, build steps, and first run of QCDCF in development mode.
+
+== Prerequisites
+
+Before you begin, ensure the following are available on your machine.
+
+Java {java-version}::
+QCDCF requires Java {java-version}.
+Verify your installation:
++
+[source,shell]
+----
+java -version
+----
+
+PostgreSQL 16 or later::
+The source database must have logical replication enabled.
+The following setting must be present in `postgresql.conf`:
++
+[source,properties]
+----
+wal_level = logical
+----
++
+The connector user requires the `REPLICATION` privilege, the ability to connect, `USAGE` on the relevant schema, `SELECT` on tracked tables, and `UPDATE` on the watermark table.
+
+Gradle via `gradle21w`::
+The project uses `gradle21w`, which must be on your `PATH`.
+Verify it is available:
++
+[source,shell]
+----
+gradle21w --version
+----
+
+== Clone and Build
+
+Clone the repository and build the project:
+
+[source,shell]
+----
+git clone https://github.com/paulsnow/QCDCF.git
+cd QCDCF
+gradle21w build
+----
+
+A successful build compiles all modules and runs the test suite.
+
+== Run in Development Mode
+
+Start the Quarkus runtime in dev mode:
+
+[source,shell]
+----
+gradle21w quarkusDev
+----
+
+The Dev UI is available at http://localhost:8080/q/dev-ui[localhost:8080/q/dev-ui].
+
+In dev mode, Quarkus hot-reloads code changes without restarting the JVM, which is useful when iterating on the CDC pipeline or REST endpoints.
+
+NOTE: During the MVP phase, a full CDC connector requires a running PostgreSQL instance with logical replication enabled and a publication configured.
+Dev mode will start successfully even without a database connection, but the connector will not activate until the source database is reachable.
+
+== Module Overview
+
+QCDCF is structured as a Gradle multi-module project.
+Each module has a focused responsibility:
+
+[cols="1,2"]
+|===
+|Module |Purpose
+
+|`cdc-api-model`
+|Stable domain records and enums shared across all modules — no framework dependencies.
+
+|`cdc-core`
+|Core interfaces and default implementations: watermark coordination, reconciliation, chunk planning, checkpoint management, sink abstraction.
+
+|`cdc-postgres`
+|PostgreSQL-specific source adapters: WAL reader, watermark writer, snapshot reader, table metadata reader.
+
+|`cdc-runtime-quarkus`
+|Quarkus shell: REST admin API, health checks, metrics, internal messaging pipeline, CDI wiring.
+
+|`cdc-test-kit`
+|Testing support: Testcontainers fixtures, snapshot/log overlap scenario helpers, reconciliation assertions.
+|===
+
+See xref:modules-overview.adoc[Modules] for the full dependency graph and module responsibilities.
+
+== Minimal PostgreSQL Setup
+
+To run the CDC pipeline against a local PostgreSQL instance, create the required source objects:
+
+[source,sql]
+----
+-- Enable the watermark control schema
+CREATE SCHEMA IF NOT EXISTS cdc_control;
+
+-- Create the watermark table
+CREATE TABLE IF NOT EXISTS cdc_control.watermark (
+    id       SMALLINT PRIMARY KEY,
+    value    UUID     NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO cdc_control.watermark (id, value)
+VALUES (1, gen_random_uuid())
+ON CONFLICT (id) DO NOTHING;
+
+-- Create a publication for the tables you want to track
+CREATE PUBLICATION app_cdc_pub FOR TABLE public.your_table;
+----
+
+IMPORTANT: Only tables with a stable primary key are supported in the MVP.
+Tables without a primary key will be rejected during connector initialisation.
+
+== Next Steps
+
+* xref:architecture.adoc[Architecture] — understand the pipeline, watermark algorithm, and design decisions
+* xref:modules-overview.adoc[Modules] — explore the module structure and dependencies
+* xref:configuration.adoc[Configuration] — configure connector and sink properties

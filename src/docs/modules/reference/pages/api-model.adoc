@@ -1,0 +1,5 @@
+= API Model
+Paul Snow
+:description: Reference for the cdc-api-model types: ChangeEnvelope, TableId, RowKey, SourcePosition, and enumerations.
+
+This page is under construction.

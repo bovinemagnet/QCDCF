@@ -1,0 +1,9 @@
+name: qcdcf
+title: QCDCF - Quarkus CDC Framework
+version: '0.0.0'
+start_page: ROOT:index.adoc
+nav:
+  - modules/ROOT/nav.adoc
+  - modules/developer-guide/nav.adoc
+  - modules/reference/nav.adoc
+  - modules/operations/nav.adoc

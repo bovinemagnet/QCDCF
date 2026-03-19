@@ -1,0 +1,75 @@
+= QCDCF — Quarkus CDC Framework
+Paul Snow
+:description: Project overview for QCDCF, a PostgreSQL Change Data Capture framework inspired by Netflix DBLog.
+include::partial$_attributes.adoc[]
+
+QCDCF is a PostgreSQL Change Data Capture (CDC) framework built with Quarkus {quarkus-version} and Java {java-version}.
+It is inspired by the Netflix DBLog algorithm and is designed to stream committed row changes from PostgreSQL with low latency whilst simultaneously capturing full table state through chunked, lock-free snapshots.
+
+== What QCDCF Does
+
+Traditional CDC approaches fall into two weak options: log-only streaming which cannot reconstruct full current state, or snapshot-based extraction which often interferes with ongoing writes.
+QCDCF combines both techniques using a _watermark-based reconciliation model_ that lets snapshot reads and live log streaming run concurrently without blocking writes or corrupting event ordering.
+
+At its core, QCDCF:
+
+* reads committed row changes from the PostgreSQL Write-Ahead Log (WAL) using logical replication,
+* performs chunked table reads using keyset pagination — never offset pagination,
+* writes recognisable low and high watermark markers into a dedicated source table,
+* reconciles snapshot rows with concurrent WAL events by removing key collisions inside the watermark window,
+* publishes a stable `ChangeEnvelope` event model to a pluggable sink.
+
+== Key Capabilities
+
+Low-latency streaming::
+Changes are captured from the PostgreSQL transaction log in commit order and published downstream with minimal delay.
+
+Chunked snapshots without table locks::
+Full table state is captured by reading rows in primary-key-ordered chunks.
+No long blocking locks are required.
+Snapshots are resumable after failure.
+
+Watermark-based reconciliation::
+Each snapshot chunk is bracketed by a low and high watermark event written through the source database.
+The reconciliation engine removes any snapshot row whose primary key was modified by a concurrent log event inside that window, ensuring that newer log history is never overridden by older snapshot state.
+
+Pluggable sinks::
+All event delivery passes through an `EventSink` abstraction.
+The MVP ships with an in-memory sink and a logging sink.
+Kafka and other brokers are added as sink adapters without changing the CDC core.
+
+At-least-once delivery::
+WAL checkpoints are advanced only after the corresponding events are durably acknowledged by the sink.
+The framework is designed to tolerate duplicate replay after crash recovery.
+
+== Architecture Principles
+
+PostgreSQL-first::
+The source side is implemented directly against PostgreSQL logical replication primitives: publications, logical replication slots, and the `pgoutput` output plugin.
+No source-side abstraction is over-engineered before it is needed.
+
+Plain Java core with Quarkus at the shell::
+The CDC engine — reconciliation, watermark coordination, chunk planning, checkpoint management — is plain Java with no CDI or framework dependencies.
+Quarkus provides configuration, lifecycle management, health endpoints, REST resources, and internal messaging.
+
+Pluggable sink from day one::
+The CDC core depends only on the `EventSink` interface.
+Broker-specific code belongs in sink adapter modules.
+
+At-least-once delivery::
+Exactly-once semantics are deferred.
+The framework achieves at-least-once guarantees through checkpoint discipline: advance only after acknowledgement.
+
+== Current Status
+
+QCDCF is in early MVP phase.
+The current codebase contains the project scaffold, build tooling, and the Antora documentation framework.
+Full CDC implementation is planned per the design documents in `docs/`.
+
+The MVP is focused on proving that the watermark reconciliation algorithm works correctly before broadening the platform.
+
+== Where to Go Next
+
+* xref:getting-started.adoc[Getting Started] — prerequisites, build, and running in dev mode
+* xref:architecture.adoc[Architecture] — system context, pipeline stages, and design decisions
+* xref:modules-overview.adoc[Modules] — module responsibilities and dependency graph

@@ -1,0 +1,13 @@
+graph LR
+    PG[(PostgreSQL\nSource DB)]
+    SA[Source Adapter\ncdc-postgres]
+    CORE[CDC Core Engine\ncdc-core]
+    META[(Metadata Store\nFramework Schema)]
+    SINK[Event Sink]
+    KAFKA[(Kafka\nfuture)]
+
+    PG -->|logical replication\nWAL stream| SA
+    SA -->|normalised ChangeEnvelope| CORE
+    CORE <-->|checkpoints\nwatermark windows| META
+    CORE -->|ChangeEnvelope batch| SINK
+    SINK -->|topic per table| KAFKA

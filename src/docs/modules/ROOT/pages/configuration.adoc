@@ -1,0 +1,6 @@
+= Configuration
+Paul Snow
+:description: Configuration reference for QCDCF connectors and runtime.
+include::partial$_attributes.adoc[]
+
+This page is under construction.

@@ -1,0 +1,8 @@
+// Shared attributes for QCDCF documentation
+:project-version: 0.0.0
+:java-version: 25
+:quarkus-version: 3.32.4
+:author: Paul Snow
+:base-package: com.paulsnow.qcdcf
+:project-name: QCDCF
+:project-full-name: Quarkus CDC Framework

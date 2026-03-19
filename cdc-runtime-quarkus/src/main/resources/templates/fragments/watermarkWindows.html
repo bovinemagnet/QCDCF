@@ -1,0 +1,84 @@
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+    <!-- Active Windows -->
+    <div>
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Active Windows</h2>
+        {#if activeWindows.isEmpty}
+        <p class="text-gray-500 text-sm italic">No active watermark windows.</p>
+        {#else}
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-gray-400 text-xs uppercase tracking-wider border-b border-gray-700">
+                        <th class="pb-2 text-left">Window</th>
+                        <th class="pb-2 text-left">Table</th>
+                        <th class="pb-2 text-left">Chunk</th>
+                        <th class="pb-2 text-left">Low Mark</th>
+                        <th class="pb-2 text-right">Buffered</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {#for win in activeWindows}
+                    <tr class="border-b border-gray-700/50">
+                        <td class="py-1.5 font-mono text-xs text-gray-300">
+                            <span class="inline-flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                                {win.shortId}
+                            </span>
+                        </td>
+                        <td class="py-1.5 font-mono text-xs text-indigo-300">{win.tableName}</td>
+                        <td class="py-1.5 font-mono text-xs text-gray-300">{win.chunkIndex}</td>
+                        <td class="py-1.5 font-mono text-xs text-gray-400">{win.lowMark}</td>
+                        <td class="py-1.5 font-mono text-xs text-gray-300 text-right">{win.logEventsBuffered}</td>
+                    </tr>
+                    {/for}
+                </tbody>
+            </table>
+        </div>
+        {/if}
+    </div>
+
+    <!-- Completed Windows -->
+    <div>
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Completed Windows</h2>
+        {#if completedWindows.isEmpty}
+        <p class="text-gray-500 text-sm italic">No completed watermark windows yet.</p>
+        {#else}
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-gray-400 text-xs uppercase tracking-wider border-b border-gray-700">
+                        <th class="pb-2 text-left">Window</th>
+                        <th class="pb-2 text-left">Table</th>
+                        <th class="pb-2 text-left">Chunk</th>
+                        <th class="pb-2 text-left">Duration</th>
+                        <th class="pb-2 text-right">Log</th>
+                        <th class="pb-2 text-right">Snapshot</th>
+                        <th class="pb-2 text-right">Dropped</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {#for win in completedWindows}
+                    <tr class="border-b border-gray-700/50">
+                        <td class="py-1.5 font-mono text-xs text-gray-300">{win.shortId}</td>
+                        <td class="py-1.5 font-mono text-xs text-indigo-300">{win.tableName}</td>
+                        <td class="py-1.5 font-mono text-xs text-gray-300">{win.chunkIndex}</td>
+                        <td class="py-1.5 font-mono text-xs text-gray-400">{win.duration}</td>
+                        <td class="py-1.5 font-mono text-xs text-gray-300 text-right">{win.logEventsBuffered}</td>
+                        <td class="py-1.5 font-mono text-xs text-gray-300 text-right">{win.snapshotEventsReceived}</td>
+                        <td class="py-1.5 font-mono text-xs text-right">
+                            {#if win.logEventsDropped == 0}
+                            <span class="text-emerald-400">{win.logEventsDropped}</span>
+                            {#else}
+                            <span class="text-yellow-400">{win.logEventsDropped}</span>
+                            {/if}
+                        </td>
+                    </tr>
+                    {/for}
+                </tbody>
+            </table>
+        </div>
+        {/if}
+    </div>
+
+</div>

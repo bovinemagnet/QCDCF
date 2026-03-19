@@ -58,10 +58,25 @@ public class ConnectorBootstrap {
     }
 
     void onStart(@Observes StartupEvent event) {
-        LOG.infof("QCDCF connector '%s' starting", config.connector().id());
+        LOG.infof("QCDCF connector '%s' starting (auto-start=%s)", config.connector().id(), config.connector().autoStart());
+
+        if (!config.connector().autoStart()) {
+            status = ConnectorStatus.STOPPED;
+            LOG.infof("QCDCF connector '%s' auto-start is disabled — use REST API or dashboard to start", config.connector().id());
+            return;
+        }
+
+        startWalReader();
+    }
+
+    /**
+     * Builds and starts the WAL reader pipeline on a background thread.
+     * On failure, sets status to FAILED with a descriptive error message
+     * but does NOT crash the application — the REST API and dashboard remain available.
+     */
+    public void startWalReader() {
         status = ConnectorStatus.STARTING;
 
-        // Build the pipeline components
         PostgresLogicalReplicationClient client = new PostgresLogicalReplicationClient(
                 jdbcUrl, username, password,
                 config.source().slotName(),
@@ -71,7 +86,6 @@ public class ConnectorBootstrap {
         PgOutputMessageDecoder decoder = new PgOutputMessageDecoder();
         PgOutputEventNormaliser normaliser = new PgOutputEventNormaliser(config.connector().id());
 
-        // Create a bridge sink that pushes events into the reactive messaging channel
         EventSink bridgeSink = new EventSink() {
             @Override
             public PublishResult publish(ChangeEnvelope event) {
@@ -88,12 +102,14 @@ public class ConnectorBootstrap {
 
         reader = new PostgresLogStreamReader(client, decoder, normaliser, bridgeSink);
 
-        // Start the blocking reader on a dedicated daemon thread
         readerThread = new Thread(() -> {
             try {
                 reader.start(0);
             } catch (Exception e) {
-                LOG.errorf(e, "WAL reader thread failed for connector '%s'", config.connector().id());
+                String hint = diagnoseFailure(e);
+                LOG.errorf("WAL reader failed for connector '%s': %s%s",
+                        config.connector().id(), e.getMessage(), hint);
+                lastError = e.getMessage() + hint;
                 status = ConnectorStatus.FAILED;
             }
         }, "qcdcf-wal-reader-" + config.connector().id());
@@ -102,6 +118,37 @@ public class ConnectorBootstrap {
 
         status = ConnectorStatus.RUNNING;
         LOG.infof("QCDCF connector '%s' is running", config.connector().id());
+    }
+
+    private String lastError;
+
+    /** Returns the last error message, or null if no error. */
+    public String lastError() {
+        return lastError;
+    }
+
+    /** Provides actionable hints based on common failure causes. */
+    private static String diagnoseFailure(Exception e) {
+        String msg = e.getMessage() != null ? e.getMessage() : "";
+        if (e.getCause() != null && e.getCause().getMessage() != null) {
+            msg += " " + e.getCause().getMessage();
+        }
+
+        if (msg.contains("permission denied to start WAL sender") || msg.contains("REPLICATION attribute")) {
+            return "\n  → Fix: ALTER ROLE <username> WITH REPLICATION;\n"
+                 + "  → See: /api/cli/check or the operations documentation";
+        }
+        if (msg.contains("replication slot") && msg.contains("does not exist")) {
+            return "\n  → Fix: SELECT pg_create_logical_replication_slot('<slot>', 'pgoutput');\n"
+                 + "  → Or the slot will be created automatically if the user has CREATE privileges";
+        }
+        if (msg.contains("publication") && msg.contains("does not exist")) {
+            return "\n  → Fix: CREATE PUBLICATION <name> FOR TABLE <table1>, <table2>;\n";
+        }
+        if (msg.contains("Connection refused") || msg.contains("connect")) {
+            return "\n  → Fix: Check quarkus.datasource.jdbc.url and ensure PostgreSQL is running";
+        }
+        return "";
     }
 
     void onStop(@Observes ShutdownEvent event) {

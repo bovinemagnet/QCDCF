@@ -58,11 +58,11 @@ public class ConnectorResource {
     }
 
     /**
-     * Trigger a table snapshot. Accepts a JSON body with a {@code tableName} field.
+     * Trigger a table snapshot. Accepts JSON or form-encoded body with a {@code tableName} field.
      */
     @POST
     @Path("/snapshot")
-    @Consumes(MediaType.APPLICATION_JSON)
+    @Consumes({MediaType.APPLICATION_JSON, MediaType.APPLICATION_FORM_URLENCODED, MediaType.WILDCARD})
     public Map<String, Object> triggerSnapshot(Map<String, String> body) {
         String tableName = body != null ? body.getOrDefault("tableName", "unknown") : "unknown";
         return connectorService.triggerSnapshot(tableName);

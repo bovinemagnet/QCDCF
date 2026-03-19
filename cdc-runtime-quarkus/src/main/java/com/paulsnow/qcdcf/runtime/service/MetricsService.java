@@ -3,8 +3,11 @@ package com.paulsnow.qcdcf.runtime.service;
 import com.paulsnow.qcdcf.model.ChangeEnvelope;
 import jakarta.enterprise.context.ApplicationScoped;
 
+import io.quarkus.scheduler.Scheduled;
+
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicLong;
@@ -190,5 +193,105 @@ public class MetricsService {
             return 0;
         }
         return (int) Math.round((double) count / total * 100);
+    }
+
+    // ── Historical metrics (sparkline data) ──────────────────────────────
+
+    private final ConcurrentLinkedDeque<MetricSnapshot> history = new ConcurrentLinkedDeque<>();
+    private static final int HISTORY_SIZE = 60;
+
+    /**
+     * A point-in-time snapshot of all counters, used for sparkline computation.
+     *
+     * @param timestamp      when the snapshot was taken
+     * @param totalEvents    total events at that instant
+     * @param inserts        total inserts at that instant
+     * @param updates        total updates at that instant
+     * @param deletes        total deletes at that instant
+     * @param snapshotReads  total snapshot reads at that instant
+     * @param errors         total errors at that instant
+     */
+    public record MetricSnapshot(
+            Instant timestamp,
+            long totalEvents,
+            long inserts,
+            long updates,
+            long deletes,
+            long snapshotReads,
+            long errors
+    ) {}
+
+    /**
+     * Scheduled task that captures a snapshot of current counters every second.
+     */
+    @Scheduled(every = "1s")
+    void captureMetricSnapshot() {
+        captureSnapshot();
+    }
+
+    /**
+     * Capture a snapshot of the current metric counters and add it to the
+     * history ring buffer.
+     */
+    public void captureSnapshot() {
+        history.addLast(new MetricSnapshot(
+                Instant.now(),
+                totalEventsProcessed.get(),
+                totalInserts.get(),
+                totalUpdates.get(),
+                totalDeletes.get(),
+                totalSnapshotReads.get(),
+                errorsCount.get()
+        ));
+        while (history.size() > HISTORY_SIZE) {
+            history.removeFirst();
+        }
+    }
+
+    /**
+     * Returns per-second event rates computed from consecutive snapshots.
+     *
+     * @return list of events-per-second values (one fewer than snapshot count)
+     */
+    public List<Double> eventsPerSecondHistory() {
+        return rateHistory(MetricSnapshot::totalEvents);
+    }
+
+    /** Per-second INSERT rate history. */
+    public List<Double> insertRateHistory() {
+        return rateHistory(MetricSnapshot::inserts);
+    }
+
+    /** Per-second UPDATE rate history. */
+    public List<Double> updateRateHistory() {
+        return rateHistory(MetricSnapshot::updates);
+    }
+
+    /** Per-second DELETE rate history. */
+    public List<Double> deleteRateHistory() {
+        return rateHistory(MetricSnapshot::deletes);
+    }
+
+    /** Per-second error rate history. */
+    public List<Double> errorRateHistory() {
+        return rateHistory(MetricSnapshot::errors);
+    }
+
+    /** Returns the raw history snapshots (defensive copy). */
+    public List<MetricSnapshot> historySnapshots() {
+        return List.copyOf(history);
+    }
+
+    private List<Double> rateHistory(java.util.function.ToLongFunction<MetricSnapshot> extractor) {
+        List<MetricSnapshot> snapshots = new ArrayList<>(history);
+        if (snapshots.size() < 2) {
+            return List.of(0.0);
+        }
+        List<Double> rates = new ArrayList<>();
+        for (int i = 1; i < snapshots.size(); i++) {
+            long diff = extractor.applyAsLong(snapshots.get(i)) - extractor.applyAsLong(snapshots.get(i - 1));
+            rates.add(Math.max(0, (double) diff));
+        }
+        return rates;
     }
 }

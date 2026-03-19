@@ -5,28 +5,32 @@ import com.paulsnow.qcdcf.postgres.metadata.PostgresTableMetadataReader;
 import com.paulsnow.qcdcf.postgres.metadata.TableMetadata;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import jakarta.inject.Inject;
-import picocli.CommandLine.Command;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.MediaType;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Validates that PostgreSQL prerequisites are correctly configured for CDC.
+ * REST endpoint that validates PostgreSQL prerequisites for CDC.
  * <p>
- * Checks: database connectivity, logical replication settings, replication slot,
- * publication existence, and replica identity on published tables.
+ * Checks connectivity, WAL level, replication slot, publication,
+ * replica identity, and watermark table.
  *
  * @author Paul Snow
  * @since 0.0.0
  */
-@Command(
-        name = "check",
-        description = "Validate PostgreSQL prerequisites for CDC (replication, publication, replica identity)."
-)
-public class CheckCommand implements Runnable {
+@Path("/api/cli")
+@Produces(MediaType.APPLICATION_JSON)
+public class CheckCommand {
 
     @Inject
     DataSource dataSource;
@@ -34,17 +38,16 @@ public class CheckCommand implements Runnable {
     @Inject
     ConnectorRuntimeConfig config;
 
-    @Override
-    public void run() {
-        System.out.println("QCDCF Prerequisite Check");
-        System.out.println("========================");
+    @GET
+    @Path("/check")
+    public Map<String, Object> check() {
+        List<Map<String, String>> checks = new ArrayList<>();
         int passed = 0;
         int failed = 0;
 
         try (Connection conn = dataSource.getConnection()) {
-            // 1. Database connectivity
-            System.out.print("  Database connection ............ ");
-            System.out.println("OK");
+            // 1. Connectivity
+            checks.add(Map.of("check", "Database connection", "status", "OK"));
             passed++;
 
             // 2. WAL level
@@ -52,12 +55,11 @@ public class CheckCommand implements Runnable {
                  ResultSet rs = stmt.executeQuery("SHOW wal_level")) {
                 rs.next();
                 String walLevel = rs.getString(1);
-                System.out.print("  WAL level ...................... ");
                 if ("logical".equals(walLevel)) {
-                    System.out.println("OK (" + walLevel + ")");
+                    checks.add(Map.of("check", "WAL level", "status", "OK", "value", walLevel));
                     passed++;
                 } else {
-                    System.out.println("FAIL (expected 'logical', got '" + walLevel + "')");
+                    checks.add(Map.of("check", "WAL level", "status", "FAIL", "value", walLevel, "expected", "logical"));
                     failed++;
                 }
             }
@@ -67,13 +69,13 @@ public class CheckCommand implements Runnable {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(
                          "SELECT active FROM pg_replication_slots WHERE slot_name = '" + slotName + "'")) {
-                System.out.print("  Replication slot '" + slotName + "' .. ");
                 if (rs.next()) {
-                    boolean active = rs.getBoolean("active");
-                    System.out.println("OK (exists, active=" + active + ")");
+                    checks.add(Map.of("check", "Replication slot '" + slotName + "'", "status", "OK",
+                            "active", String.valueOf(rs.getBoolean("active"))));
                     passed++;
                 } else {
-                    System.out.println("WARN (not found — will be created on start)");
+                    checks.add(Map.of("check", "Replication slot '" + slotName + "'", "status", "WARN",
+                            "detail", "Not found — will be created on start"));
                 }
             }
 
@@ -82,36 +84,35 @@ public class CheckCommand implements Runnable {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(
                          "SELECT 1 FROM pg_publication WHERE pubname = '" + pubName + "'")) {
-                System.out.print("  Publication '" + pubName + "' ......... ");
                 if (rs.next()) {
-                    System.out.println("OK (exists)");
+                    checks.add(Map.of("check", "Publication '" + pubName + "'", "status", "OK"));
                     passed++;
                 } else {
-                    System.out.println("FAIL (not found — create with: CREATE PUBLICATION " + pubName + " FOR TABLE ...)");
+                    checks.add(Map.of("check", "Publication '" + pubName + "'", "status", "FAIL",
+                            "detail", "Not found — create with: CREATE PUBLICATION " + pubName + " FOR TABLE ..."));
                     failed++;
                 }
             }
 
-            // 5. Published tables and replica identity
+            // 5. Published tables
             var metadataReader = new PostgresTableMetadataReader();
             List<TableId> tables = metadataReader.discoverPublicationTables(conn, pubName);
-            System.out.print("  Published tables ............... ");
             if (tables.isEmpty()) {
-                System.out.println("WARN (no tables in publication)");
+                checks.add(Map.of("check", "Published tables", "status", "WARN", "detail", "No tables in publication"));
             } else {
-                System.out.println("OK (" + tables.size() + " tables)");
+                checks.add(Map.of("check", "Published tables", "status", "OK", "count", String.valueOf(tables.size())));
                 passed++;
-            }
-
-            for (TableId tableId : tables) {
-                try {
-                    TableMetadata metadata = metadataReader.loadTableMetadata(conn, tableId);
-                    System.out.printf("    %-30s PK=%s  identity=%s  OK%n",
-                            tableId, metadata.primaryKeyColumns(), metadata.replicaIdentity());
-                    passed++;
-                } catch (Exception e) {
-                    System.out.printf("    %-30s FAIL: %s%n", tableId, e.getMessage());
-                    failed++;
+                for (TableId tableId : tables) {
+                    try {
+                        TableMetadata metadata = metadataReader.loadTableMetadata(conn, tableId);
+                        checks.add(Map.of("check", "Table " + tableId, "status", "OK",
+                                "pk", String.join(", ", metadata.primaryKeyColumns()),
+                                "identity", metadata.replicaIdentity()));
+                        passed++;
+                    } catch (Exception e) {
+                        checks.add(Map.of("check", "Table " + tableId, "status", "FAIL", "detail", e.getMessage()));
+                        failed++;
+                    }
                 }
             }
 
@@ -119,26 +120,25 @@ public class CheckCommand implements Runnable {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(
                          "SELECT 1 FROM information_schema.tables WHERE table_name = 'qcdcf_watermark'")) {
-                System.out.print("  Watermark table ................ ");
                 if (rs.next()) {
-                    System.out.println("OK (exists)");
+                    checks.add(Map.of("check", "Watermark table", "status", "OK"));
                     passed++;
                 } else {
-                    System.out.println("WARN (not found — will be created on first snapshot)");
+                    checks.add(Map.of("check", "Watermark table", "status", "WARN",
+                            "detail", "Not found — will be created on first snapshot"));
                 }
             }
 
         } catch (Exception e) {
-            System.out.println("FAIL (" + e.getMessage() + ")");
+            checks.add(Map.of("check", "Database connection", "status", "FAIL", "detail", e.getMessage()));
             failed++;
         }
 
-        System.out.println();
-        System.out.printf("Result: %d passed, %d failed%n", passed, failed);
-        if (failed > 0) {
-            System.out.println("Fix the issues above before starting the connector.");
-        } else {
-            System.out.println("All checks passed. Ready to start.");
-        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("passed", passed);
+        result.put("failed", failed);
+        result.put("ready", failed == 0);
+        result.put("checks", checks);
+        return result;
     }
 }

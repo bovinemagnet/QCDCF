@@ -2,15 +2,16 @@ package com.paulsnow.qcdcf.runtime.service;
 
 import com.paulsnow.qcdcf.core.sink.EventSink;
 import com.paulsnow.qcdcf.core.sink.LoggingEventSink;
+import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import com.paulsnow.qcdcf.runtime.kafka.EventSerializer;
 import com.paulsnow.qcdcf.runtime.kafka.KafkaEventSink;
 import com.paulsnow.qcdcf.runtime.kafka.PartitionKeyStrategy;
 import com.paulsnow.qcdcf.runtime.kafka.TopicRouter;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
+import jakarta.inject.Inject;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,7 +20,7 @@ import java.util.Properties;
 /**
  * CDI producer for the {@link EventSink} used by the publish stage of the pipeline.
  * <p>
- * Selects the sink implementation based on the {@code qcdcf.sink.type} configuration property.
+ * Selects the sink implementation based on {@link ConnectorRuntimeConfig.SinkConfig#type()}.
  * Supported values are {@code logging} (default) and {@code kafka}.
  *
  * @author Paul Snow
@@ -30,23 +31,13 @@ public class EventSinkProducer {
 
     private static final Logger LOG = LoggerFactory.getLogger(EventSinkProducer.class);
 
-    @ConfigProperty(name = "qcdcf.sink.type", defaultValue = "logging")
-    String sinkType;
+    @Inject
+    ConnectorRuntimeConfig config;
 
-    @ConfigProperty(name = "qcdcf.sink.kafka.bootstrap-servers", defaultValue = "localhost:9092")
-    String bootstrapServers;
-
-    @ConfigProperty(name = "qcdcf.sink.kafka.topic-prefix", defaultValue = "qcdcf")
-    String topicPrefix;
-
-    /**
-     * Produces the application-scoped {@link EventSink} instance.
-     *
-     * @return the configured event sink
-     */
     @Produces
     @ApplicationScoped
     public EventSink createSink() {
+        String sinkType = config.sink().type();
         return switch (sinkType) {
             case "kafka" -> createKafkaSink();
             case "logging" -> {
@@ -61,10 +52,11 @@ public class EventSinkProducer {
     }
 
     private KafkaEventSink createKafkaSink() {
-        LOG.info("Using KafkaEventSink with bootstrap servers: {}", bootstrapServers);
+        var kafkaConfig = config.sink().kafka();
+        LOG.info("Using KafkaEventSink with bootstrap servers: {}", kafkaConfig.bootstrapServers());
 
         Properties props = new Properties();
-        props.put("bootstrap.servers", bootstrapServers);
+        props.put("bootstrap.servers", kafkaConfig.bootstrapServers());
         props.put("key.serializer", StringSerializer.class.getName());
         props.put("value.serializer", ByteArraySerializer.class.getName());
         props.put("acks", "all");
@@ -73,7 +65,7 @@ public class EventSinkProducer {
 
         return new KafkaEventSink(
                 props,
-                new TopicRouter(topicPrefix),
+                new TopicRouter(kafkaConfig.topicPrefix()),
                 new PartitionKeyStrategy(),
                 new EventSerializer()
         );

@@ -1,5 +1,160 @@
-= Building
+= Building QCDCF
 Paul Snow
-:description: Build instructions for QCDCF modules.
+:description: Prerequisites and build commands for all QCDCF modules.
+include::ROOT:partial$_attributes.adoc[]
 
-This page is under construction.
+This page covers everything required to build {project-name} from source, run it locally
+in development mode, and produce container images.
+
+== Prerequisites
+
+Before you begin, ensure the following are available on your development machine:
+
+[cols="2,4", options="header"]
+|===
+|Requirement |Notes
+
+|Java {java-version}
+|The build targets Java {java-version} source and bytecode compatibility.
+A JDK must be on `PATH` and `JAVA_HOME` must be set correctly.
+
+|Gradle wrapper (`gradle21w`)
+|The project uses a Gradle wrapper aliased as `gradle21w` on `PATH`.
+Do not use `./gradlew` directly.
+
+|Docker (optional)
+|Required only if you want to build or run container images.
+Docker Desktop or any compatible container runtime is sufficient.
+
+|GraalVM (optional)
+|Required only for native binary builds.
+The GraalVM JDK distribution for Java {java-version} is recommended.
+|===
+
+== Cloning the Repository
+
+[source,bash]
+----
+git clone https://github.com/paulsnow/qcdcf.git
+cd qcdcf
+----
+
+== Building All Modules
+
+To compile all modules, run all unit tests, and produce JARs:
+
+[source,bash]
+----
+gradle21w build
+----
+
+The multi-module build respects the dependency graph automatically.
+The build order is:
+
+. `cdc-api-model`
+. `cdc-core` (depends on `cdc-api-model`)
+. `cdc-postgres` (depends on `cdc-api-model`, `cdc-core`)
+. `cdc-test-kit` (depends on `cdc-api-model`)
+. `cdc-runtime-quarkus` (depends on all of the above)
+
+NOTE: The `cdc-postgres` integration tests require Docker to be running, because
+Testcontainers starts a real PostgreSQL instance. If Docker is unavailable, use
+`gradle21w build -x test` to skip tests during the build.
+
+== Building a Specific Module
+
+[source,bash]
+----
+gradle21w :cdc-core:build
+gradle21w :cdc-postgres:build
+gradle21w :cdc-runtime-quarkus:build
+----
+
+== Running in Development Mode
+
+Quarkus Dev Mode provides live reload for code and configuration changes without restarting
+the JVM. Start it with:
+
+[source,bash]
+----
+gradle21w :cdc-runtime-quarkus:quarkusDev
+----
+
+Once running, the following URLs are available:
+
+[cols="2,4", options="header"]
+|===
+|URL |Purpose
+
+|`http://localhost:8080/q/dev-ui`
+|Quarkus Dev UI — inspect CDI beans, configuration, health, and more.
+
+|`http://localhost:8080/dashboard`
+|{project-name} connector dashboard — status, progress, and recent events.
+
+|`http://localhost:8080/api/connector/status`
+|JSON status of the running connector.
+
+|`http://localhost:8080/q/health`
+|SmallRye Health — liveness and readiness probes.
+|===
+
+TIP: In Dev Mode, any changes to Java sources or `application.properties` are picked up
+immediately on the next HTTP request without a full restart.
+
+== Building the Antora Documentation
+
+[source,bash]
+----
+gradle21w antora
+----
+
+The generated site is written to `build/site/`. Open `build/site/index.html` in a browser
+to preview locally. The Antora build validates all cross-references; a non-zero exit code
+indicates a broken xref or missing page.
+
+== Native Build
+
+A native binary eliminates JVM startup time and greatly reduces memory footprint. It requires
+GraalVM with the `native-image` tool available on `PATH`.
+
+[source,bash]
+----
+gradle21w :cdc-runtime-quarkus:build -Dquarkus.native.enabled=true
+----
+
+[WARNING]
+====
+Native compilation is CPU and memory intensive and may take several minutes. Allocate at
+least 8 GB of RAM to the build machine. The output binary is placed in
+`cdc-runtime-quarkus/build/`.
+====
+
+== Local Configuration Overrides
+
+Create a `.env` file in the project root (or in `cdc-runtime-quarkus/`) to override
+configuration properties during local development without modifying tracked files:
+
+[source,properties]
+----
+QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://localhost:5432/mydb
+QUARKUS_DATASOURCE_USERNAME=qcdcf
+QUARKUS_DATASOURCE_PASSWORD=secret
+QCDCF_SOURCE_PUBLICATION_NAME=qcdcf_pub
+QCDCF_SOURCE_SLOT_NAME=qcdcf_slot
+----
+
+Quarkus reads `.env` automatically in Dev Mode. In production, set these as real environment
+variables or mount them from a secrets manager.
+
+TIP: All `qcdcf.*` configuration properties map directly to `QCDCF_*` environment variables
+following Quarkus's standard capitalisation and underscore-substitution rules.
+
+== Clean Build
+
+To remove all build outputs and start fresh:
+
+[source,bash]
+----
+gradle21w clean build
+----

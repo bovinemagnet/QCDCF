@@ -1,5 +1,44 @@
 = Developer Guide
 Paul Snow
 :description: Developer guide for contributing to and extending QCDCF.
+include::ROOT:partial$_attributes.adoc[]
 
-This page is under construction.
+This section covers everything you need to build, test, and contribute to {project-name}.
+Whether you are running the framework locally for the first time or writing new integration
+tests, this guide walks you through the tools, conventions, and workflows used across the
+project.
+
+== Project Structure
+
+{project-name} is organised as a multi-module Gradle build. Each module has a clearly
+defined responsibility:
+
+[cols="2,4", options="header"]
+|===
+|Module |Responsibility
+
+|`cdc-api-model`
+|Shared data model: `TableId`, `ChangeEnvelope`, `ChangeEvent`, and related types.
+No runtime dependencies; used by all other modules.
+
+|`cdc-core`
+|Core interfaces and watermark-based reconciliation engine. Contains the snapshot
+coordinator, chunk iterator, and key-collision removal logic.
+
+|`cdc-postgres`
+|PostgreSQL adapter: WAL reader using `pgoutput`, logical replication slot management,
+table metadata discovery, and publication enumeration.
+
+|`cdc-test-kit`
+|Shared test infrastructure: `PostgresContainerSupport`, fixture tables, and
+`ChangeEnvelopeAssertions`. Used by integration test suites in other modules.
+
+|`cdc-runtime-quarkus`
+|Quarkus application shell. Wires all modules together, exposes the REST admin API,
+health endpoints, and the web dashboard.
+|===
+
+== In This Section
+
+* xref:building.adoc[Building] — prerequisites, build commands, and module dependency order.
+* xref:testing.adoc[Testing] — test philosophy, running tests, and writing new test cases.

@@ -15,8 +15,8 @@ dependencies {
     implementation 'io.quarkus:quarkus-arc'
     implementation 'io.quarkus:quarkus-messaging'
     implementation 'io.quarkus:quarkus-messaging-kafka'
-    implementation 'io.quarkus:quarkus-qute'
-    implementation 'io.quarkus:quarkus-picocli'
+    implementation 'io.quarkus:quarkus-rest-qute'
+    implementation 'io.quarkus:quarkus-scheduler'
 
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation project(':cdc-test-kit')

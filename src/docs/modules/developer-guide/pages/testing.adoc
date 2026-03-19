@@ -1,5 +1,169 @@
-= Testing
+= Testing QCDCF
 Paul Snow
-:description: Testing strategy and test execution guide for QCDCF.
+:description: Test philosophy, test execution, and guidance for writing new tests in QCDCF.
+include::ROOT:partial$_attributes.adoc[]
 
-This page is under construction.
+{project-name} uses a layered testing strategy. Fast unit tests run without any external
+dependencies and form the innermost feedback loop. Integration tests use Testcontainers to
+spin up a real PostgreSQL instance and prove end-to-end behaviour through the full pipeline.
+
+== Test Philosophy
+
+* *Test-Driven Development* is the expected approach for all reconciliation and watermark
+  logic. The behaviour of the snapshot engine and key-collision removal must be specified
+  by tests before implementation.
+* *Integration tests are first-class*. The most valuable tests are those that exercise
+  the PostgreSQL WAL pipeline end-to-end: ingest an event, apply the watermark algorithm,
+  and assert the deduplicated result.
+* *No mocking of infrastructure*. The `cdc-postgres` tests do not mock JDBC connections.
+  They use a real PostgreSQL container via Testcontainers.
+* *AssertJ* is used for all assertions, providing readable failure messages.
+
+== Running the Tests
+
+=== All Tests
+
+[source,bash]
+----
+gradle21w test
+----
+
+This runs every test across all modules. The Testcontainers-based integration tests require
+Docker to be running.
+
+=== Tests for a Specific Module
+
+[source,bash]
+----
+gradle21w :cdc-postgres:test
+gradle21w :cdc-core:test
+gradle21w :cdc-api-model:test
+----
+
+=== A Single Test Class
+
+[source,bash]
+----
+gradle21w :cdc-postgres:test --tests 'com.paulsnow.qcdcf.postgres.metadata.PostgresTableMetadataReaderIT'
+----
+
+=== Skipping Tests
+
+[source,bash]
+----
+gradle21w build -x test
+----
+
+Use this when Docker is unavailable or during a fast compile-only cycle.
+
+== Test Categories
+
+=== Unit Tests (`cdc-api-model`, `cdc-core`)
+
+These tests have no external dependencies and run in milliseconds. They cover:
+
+* Serialisation and equality of `TableId`, `ChangeEnvelope`, and `ChangeEvent`.
+* The watermark window logic: LOW/HIGH boundary pairing and chunk boundary detection.
+* Reconciliation algorithm: given an ordered stream of events and watermarks, assert that
+  events within a window are deduplicated by key, retaining only the last write.
+
+=== Integration Tests (`cdc-postgres`)
+
+Integration tests are annotated with `@Testcontainers` and extend or compose
+`PostgresContainerSupport`. The container is configured with logical replication enabled:
+
+[source,java]
+----
+PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
+        .withCommand("postgres",
+                "-c", "wal_level=logical",
+                "-c", "max_replication_slots=4",
+                "-c", "max_wal_senders=4");
+----
+
+Integration tests cover:
+
+* Table metadata discovery via `PostgresTableMetadataReader`.
+* Publication enumeration — asserting the correct set of tables is returned.
+* Replica identity inspection.
+* Replication slot lifecycle: create, consume, drop.
+
+=== WAL Capture Tests
+
+These are the highest-integration tests in the suite. They:
+
+. Start a PostgreSQL container with `wal_level=logical`.
+. Create a test table, a publication, and a replication slot.
+. Execute `INSERT`, `UPDATE`, and `DELETE` statements through a JDBC connection.
+. Assert that the WAL reader delivers the corresponding `ChangeEnvelope` instances
+  with the correct operation type, table identity, and column values.
+
+=== Reconciliation Tests
+
+Reconciliation tests are the highest-value tests in the project. They prove that the
+watermark-based snapshot algorithm correctly removes duplicate keys from the change stream.
+
+A typical reconciliation test:
+
+. Inserts N rows into the captured table.
+. Triggers a snapshot, causing the engine to write LOW and HIGH watermark rows.
+. Issues `UPDATE` statements to some rows while the snapshot is in progress.
+. Asserts that the final event stream contains exactly one event per primary key,
+  with the most recent value retained, and no phantom deletes.
+
+== Testcontainers Setup
+
+All integration tests that need PostgreSQL use `PostgresContainerSupport` from the
+`cdc-test-kit` module. The support class manages the container lifecycle and provides a
+pre-configured `DataSource`:
+
+[source,java]
+----
+@Testcontainers
+class MyIntegrationTest extends PostgresContainerSupport { // <1>
+
+    @Test
+    void shouldDiscoverPublishedTables() {
+        try (Connection conn = dataSource().getConnection()) { // <2>
+            // ... test body
+        }
+    }
+}
+----
+<1> `PostgresContainerSupport` starts the container as a shared resource for the test class.
+<2> `dataSource()` returns a `DataSource` pre-configured with the container's JDBC URL.
+
+== Test Fixtures
+
+The `cdc-test-kit` module provides reusable fixtures to keep test code concise:
+
+`CustomerTableFixture`::
+Creates and populates a `customer` table with a known schema (id, name, email, created_at).
+Provides helper methods to insert, update, and delete rows by ID.
+
+`ChangeEnvelopeAssertions`::
+AssertJ-style fluent assertions for `ChangeEnvelope` instances. Example:
+
+[source,java]
+----
+ChangeEnvelopeAssertions.assertThat(envelope)
+        .hasOperation(ChangeEvent.Operation.INSERT)
+        .hasTable("public", "customer")
+        .hasColumnValue("name", "Alice");
+----
+
+== Writing New Tests
+
+When adding a new test, follow these conventions:
+
+. *Unit tests* live in `src/test/java/` under the same package as the class under test.
+  Name them `*Test.java`.
+. *Integration tests* live in `src/test/java/` with the suffix `IT.java` and are annotated
+  with `@Testcontainers` and `@Tag("integration")`.
+. Use `PostgresContainerSupport` for any test that needs a database connection.
+. Write assertions using AssertJ (`assertThat(...)`), not JUnit assertions.
+. Use `@DisplayName` to provide a readable description of each test method.
+. Keep test methods short. Extract database setup into `@BeforeEach` methods or fixtures.
+
+NOTE: Tests in `cdc-test-kit` itself should be minimal — that module exists to support
+other modules, not to test framework behaviour.

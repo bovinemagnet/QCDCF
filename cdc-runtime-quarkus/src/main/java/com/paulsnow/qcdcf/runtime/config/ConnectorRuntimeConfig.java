@@ -18,9 +18,16 @@ public interface ConnectorRuntimeConfig {
     /** Source database configuration. */
     SourceConfig source();
 
+    /** Sink configuration. */
+    SinkConfig sink();
+
     interface ConnectorConfig {
         @WithDefault("default-connector")
         String id();
+
+        /** Whether to auto-start the WAL reader on application startup. */
+        @WithDefault("true")
+        boolean autoStart();
     }
 
     interface SourceConfig {
@@ -32,5 +39,21 @@ public interface ConnectorRuntimeConfig {
 
         @WithDefault("1000")
         int chunkSize();
+    }
+
+    interface SinkConfig {
+        @WithDefault("logging")
+        String type();
+
+        /** Kafka-specific sink configuration. */
+        KafkaConfig kafka();
+
+        interface KafkaConfig {
+            @WithDefault("localhost:9092")
+            String bootstrapServers();
+
+            @WithDefault("qcdcf")
+            String topicPrefix();
+        }
     }
 }

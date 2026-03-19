@@ -2,59 +2,59 @@ package com.paulsnow.qcdcf.runtime.cli;
 
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import jakarta.inject.Inject;
-import picocli.CommandLine.Command;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.MediaType;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
- * Displays detailed version and build information about the QCDCF installation.
+ * REST endpoint providing detailed version and runtime information.
  *
  * @author Paul Snow
  * @since 0.0.0
  */
-@Command(
-        name = "about",
-        description = "Display version, build, and runtime information."
-)
-public class AboutCommand implements Runnable {
+@Path("/api/cli")
+@Produces(MediaType.APPLICATION_JSON)
+public class AboutCommand {
 
     @Inject
     ConnectorRuntimeConfig config;
 
-    @Override
-    public void run() {
-        System.out.println();
-        System.out.println("  QCDCF — Quarkus CDC Framework");
-        System.out.println("  ════════════════════════════════════════");
-        System.out.println();
-        System.out.println("  Version:       0.0.0");
-        System.out.println("  Author:        Paul Snow");
-        System.out.println("  Architecture:  Netflix DBLog-inspired CDC");
-        System.out.println();
-        System.out.println("  Runtime");
-        System.out.println("  ───────");
-        System.out.printf("  Java:          %s (%s)%n", System.getProperty("java.version"), System.getProperty("java.vendor"));
-        System.out.printf("  Quarkus:       3.32.4%n");
-        System.out.printf("  OS:            %s %s (%s)%n",
-                System.getProperty("os.name"), System.getProperty("os.version"), System.getProperty("os.arch"));
-        System.out.println();
-        System.out.println("  Configuration");
-        System.out.println("  ─────────────");
-        System.out.printf("  Connector ID:  %s%n", config.connector().id());
-        System.out.printf("  Slot:          %s%n", config.source().slotName());
-        System.out.printf("  Publication:   %s%n", config.source().publicationName());
-        System.out.printf("  Chunk size:    %d%n", config.source().chunkSize());
-        System.out.println();
-        System.out.println("  Modules");
-        System.out.println("  ───────");
-        System.out.println("  cdc-api-model          Canonical event model (records, enums)");
-        System.out.println("  cdc-core               Reconciliation engine, sink abstraction, checkpoints");
-        System.out.println("  cdc-postgres           WAL reader, pgoutput decoder, snapshot reader");
-        System.out.println("  cdc-runtime-quarkus    REST API, HTMX dashboard, Kafka sink, CLI");
-        System.out.println("  cdc-test-kit           Testcontainers support, fixtures, assertions");
-        System.out.println();
-        System.out.println("  Pipeline");
-        System.out.println("  ────────");
-        System.out.println("  PostgreSQL WAL → pgoutput decoder → event normaliser");
-        System.out.println("    → watermark coordinator → reconciliation engine → event sink");
-        System.out.println();
+    @GET
+    @Path("/about")
+    public Map<String, Object> about() {
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("name", "QCDCF");
+        info.put("fullName", "Quarkus CDC Framework");
+        info.put("version", "0.0.0");
+        info.put("author", "Paul Snow");
+        info.put("architecture", "Netflix DBLog-inspired CDC");
+
+        Map<String, String> runtime = new LinkedHashMap<>();
+        runtime.put("java", System.getProperty("java.version") + " (" + System.getProperty("java.vendor") + ")");
+        runtime.put("quarkus", "3.32.4");
+        runtime.put("os", System.getProperty("os.name") + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")");
+        info.put("runtime", runtime);
+
+        Map<String, Object> configuration = new LinkedHashMap<>();
+        configuration.put("connectorId", config.connector().id());
+        configuration.put("slotName", config.source().slotName());
+        configuration.put("publicationName", config.source().publicationName());
+        configuration.put("chunkSize", config.source().chunkSize());
+        configuration.put("sinkType", config.sink().type());
+        info.put("configuration", configuration);
+
+        info.put("modules", Map.of(
+                "cdc-api-model", "Canonical event model (records, enums)",
+                "cdc-core", "Reconciliation engine, sink abstraction, checkpoints",
+                "cdc-postgres", "WAL reader, pgoutput decoder, snapshot reader",
+                "cdc-runtime-quarkus", "REST API, HTMX dashboard, Kafka sink, CLI",
+                "cdc-test-kit", "Testcontainers support, fixtures, assertions"
+        ));
+
+        return info;
     }
 }

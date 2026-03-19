@@ -1,0 +1,53 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Monitored Tables</h2>
+<p class="text-xs text-gray-500 mb-3">Publication: <span class="font-mono text-indigo-300">{publicationName}</span></p>
+{#if tables.isEmpty()}
+<p class="text-sm text-gray-500 italic">No tables found in publication.</p>
+{#else}
+<div class="overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="text-left text-xs text-gray-500 uppercase border-b border-gray-700">
+                <th class="pb-2 pr-4">Table</th>
+                <th class="pb-2 pr-4">Primary Key</th>
+                <th class="pb-2 pr-4">Identity</th>
+                <th class="pb-2 pr-4 text-right">Columns</th>
+                <th class="pb-2 text-right">~Rows</th>
+            </tr>
+        </thead>
+        <tbody>
+            {#for table in tables}
+            <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                <td class="py-2 pr-4">
+                    <span class="font-mono text-indigo-300">{table.canonicalName}</span>
+                </td>
+                <td class="py-2 pr-4">
+                    {#if table.valid}
+                    <span class="font-mono text-gray-300">{table.primaryKey}</span>
+                    {#else}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-900/30 text-red-400">ERROR</span>
+                    {/if}
+                </td>
+                <td class="py-2 pr-4">
+                    {#if table.valid}
+                    {#if table.replicaIdentity == 'DEFAULT'}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-900/30 text-emerald-400">DEFAULT</span>
+                    {#else if table.replicaIdentity == 'FULL'}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-900/30 text-yellow-400">FULL</span>
+                    {#else}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-400">{table.replicaIdentity}</span>
+                    {/if}
+                    {/if}
+                </td>
+                <td class="py-2 pr-4 text-right font-mono text-gray-400">
+                    {#if table.valid}{table.columnCount}{/if}
+                </td>
+                <td class="py-2 text-right font-mono text-gray-400">
+                    {#if table.valid}{table.approximateRows}{/if}
+                </td>
+            </tr>
+            {/for}
+        </tbody>
+    </table>
+</div>
+<p class="text-xs text-gray-600 mt-3">{tables.size()} table{#if tables.size() != 1}s{/if} monitored</p>
+{/if}

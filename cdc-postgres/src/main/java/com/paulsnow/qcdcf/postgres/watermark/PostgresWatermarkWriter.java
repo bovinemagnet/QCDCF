@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -61,7 +62,7 @@ public class PostgresWatermarkWriter implements WatermarkCoordinator {
             ps.setString(3, tableId.schema());
             ps.setString(4, tableId.table());
             ps.setInt(5, chunkIndex);
-            ps.setObject(6, timestamp);
+            ps.setTimestamp(6, Timestamp.from(timestamp));
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new SourceReadException(

@@ -1,0 +1,13 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Error Log</h2>
+{#if recentErrors.isEmpty}
+<p class="text-emerald-400 text-sm">No errors recorded.</p>
+{#else}
+<div class="space-y-2">
+    {#for error in recentErrors}
+    <div class="flex items-start gap-3 text-sm border-b border-red-900/30 pb-2">
+        <span class="font-mono text-xs text-gray-500 whitespace-nowrap">{error.timestamp}</span>
+        <span class="text-red-400">{error.message}</span>
+    </div>
+    {/for}
+</div>
+{/if}

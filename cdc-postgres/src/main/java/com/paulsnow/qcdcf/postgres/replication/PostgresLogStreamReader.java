@@ -1,11 +1,15 @@
 package com.paulsnow.qcdcf.postgres.replication;
 
+import com.paulsnow.qcdcf.core.checkpoint.CheckpointManager;
+import com.paulsnow.qcdcf.core.checkpoint.ConnectorCheckpoint;
 import com.paulsnow.qcdcf.core.sink.EventSink;
 import com.paulsnow.qcdcf.core.sink.PublishResult;
 import com.paulsnow.qcdcf.model.ChangeEnvelope;
+import com.paulsnow.qcdcf.model.SourcePosition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -30,10 +34,13 @@ public class PostgresLogStreamReader {
     private final PgOutputMessageDecoder decoder;
     private final PgOutputEventNormaliser normaliser;
     private final EventSink sink;
+    private final CheckpointManager checkpointManager;
+    private final String connectorId;
 
     private volatile boolean running;
     private long lastProcessedLsn;
     private Long currentTxId;
+    private Instant lastCommitTimestamp;
 
     /**
      * Creates a new log stream reader wiring all pipeline components.
@@ -47,10 +54,31 @@ public class PostgresLogStreamReader {
                                    PgOutputMessageDecoder decoder,
                                    PgOutputEventNormaliser normaliser,
                                    EventSink sink) {
+        this(client, decoder, normaliser, sink, null, null);
+    }
+
+    /**
+     * Creates a log stream reader with checkpoint persistence.
+     *
+     * @param client            the replication client
+     * @param decoder           the pgoutput decoder
+     * @param normaliser        the event normaliser
+     * @param sink              the event sink
+     * @param checkpointManager the checkpoint manager for durable position tracking (may be null)
+     * @param connectorId       the connector ID for checkpoint records (required if checkpointManager is non-null)
+     */
+    public PostgresLogStreamReader(PostgresLogicalReplicationClient client,
+                                   PgOutputMessageDecoder decoder,
+                                   PgOutputEventNormaliser normaliser,
+                                   EventSink sink,
+                                   CheckpointManager checkpointManager,
+                                   String connectorId) {
         this.client = Objects.requireNonNull(client, "client must not be null");
         this.decoder = Objects.requireNonNull(decoder, "decoder must not be null");
         this.normaliser = Objects.requireNonNull(normaliser, "normaliser must not be null");
         this.sink = Objects.requireNonNull(sink, "sink must not be null");
+        this.checkpointManager = checkpointManager;
+        this.connectorId = connectorId;
     }
 
     /**
@@ -101,7 +129,9 @@ public class PostgresLogStreamReader {
             }
             case COMMIT -> {
                 lastProcessedLsn = decoded.lsn();
+                lastCommitTimestamp = decoded.commitTimestamp();
                 client.acknowledgeLsn(lastProcessedLsn);
+                saveCheckpoint();
                 LOG.trace("Transaction commit acknowledged: LSN={}", lastProcessedLsn);
                 currentTxId = null;
             }
@@ -120,6 +150,39 @@ public class PostgresLogStreamReader {
                             decoded.tableId(), raw.lsn(), failure.reason());
                 }
             }
+        }
+    }
+
+    /**
+     * Loads the last checkpointed LSN for this connector, or 0 if none exists.
+     * Use this to determine the start LSN when calling {@link #start(long)}.
+     *
+     * @return the last persisted LSN, or 0 if no checkpoint exists
+     */
+    public long loadStartLsn() {
+        if (checkpointManager == null || connectorId == null) {
+            return 0L;
+        }
+        return checkpointManager.load(connectorId)
+                .map(cp -> cp.position().lsn())
+                .orElse(0L);
+    }
+
+    private void saveCheckpoint() {
+        if (checkpointManager == null || connectorId == null) {
+            return;
+        }
+        try {
+            Instant ts = lastCommitTimestamp != null ? lastCommitTimestamp : Instant.now();
+            ConnectorCheckpoint checkpoint = new ConnectorCheckpoint(
+                    connectorId,
+                    new SourcePosition(lastProcessedLsn, currentTxId, ts),
+                    null, -1, Instant.now()
+            );
+            checkpointManager.save(checkpoint);
+            LOG.trace("Checkpoint saved: connector={}, LSN={}", connectorId, lastProcessedLsn);
+        } catch (Exception e) {
+            LOG.warn("Failed to save checkpoint at LSN {}: {}", lastProcessedLsn, e.getMessage());
         }
     }
 

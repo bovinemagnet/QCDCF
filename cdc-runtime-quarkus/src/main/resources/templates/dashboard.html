@@ -15,8 +15,17 @@
         </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto px-6 py-8">
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <main class="max-w-7xl mx-auto px-6 py-8 space-y-6">
+
+        <!-- Top Row: Key Metrics Cards -->
+        <div hx-get="/dashboard/fragments/metrics"
+             hx-trigger="every 3s"
+             hx-swap="innerHTML">
+            {#include fragments/metricsCards /}
+        </div>
+
+        <!-- Second Row: Connector Status + Event Breakdown -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
 
             <!-- Connector Status -->
             <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
@@ -26,54 +35,87 @@
                 {#include statusFragment /}
             </div>
 
-            <!-- Snapshot Control -->
-            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
-                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Snapshot Control</h2>
-                <div class="space-y-3">
-                    <div class="flex justify-between">
-                        <span class="text-gray-400">Last Table</span>
-                        <span class="font-mono text-indigo-300">{lastSnapshotTable}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-gray-400">Status</span>
-                        <span class="font-mono text-gray-300">{lastSnapshotStatus}</span>
-                    </div>
-                    <form class="mt-4">
-                        <label for="tableName" class="block text-sm text-gray-400 mb-1">Table Name</label>
-                        <input id="tableName" name="tableName" type="text" placeholder="public.my_table"
-                               class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-indigo-500" />
-                        <button type="button"
-                                class="mt-3 w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 px-4 rounded transition-colours"
-                                hx-post="/api/connector/snapshot"
-                                hx-vals='js:{"tableName": document.getElementById("tableName").value}'
-                                hx-headers='{"Content-Type": "application/json"}'
-                                hx-swap="none">
-                            Trigger Snapshot
-                        </button>
-                    </form>
-                </div>
+            <!-- Event Breakdown -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+                 hx-get="/dashboard/fragments/breakdown"
+                 hx-trigger="every 3s"
+                 hx-swap="innerHTML">
+                {#include fragments/eventBreakdown /}
             </div>
 
-            <!-- Connector Controls -->
-            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
-                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Controls</h2>
-                <div class="space-y-3">
-                    <button type="button"
-                            class="w-full bg-yellow-600 hover:bg-yellow-500 text-white text-sm font-medium py-2 px-4 rounded transition-colours"
-                            hx-post="/api/connector/pause"
-                            hx-swap="none">
-                        Pause Connector
-                    </button>
-                    <button type="button"
-                            class="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2 px-4 rounded transition-colours"
-                            hx-post="/api/connector/resume"
-                            hx-swap="none">
-                        Resume Connector
-                    </button>
+        </div>
+
+        <!-- Third Row: Recent Events + Controls -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <!-- Recent Events -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+                 hx-get="/dashboard/fragments/recent-events"
+                 hx-trigger="every 2s"
+                 hx-swap="innerHTML">
+                {#include fragments/recentEvents /}
+            </div>
+
+            <!-- Controls + Snapshot -->
+            <div class="space-y-6">
+                <!-- Snapshot Control -->
+                <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+                    <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Snapshot Control</h2>
+                    <div class="space-y-3">
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Last Table</span>
+                            <span class="font-mono text-indigo-300">{lastSnapshotTable}</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Status</span>
+                            <span class="font-mono text-gray-300">{lastSnapshotStatus}</span>
+                        </div>
+                        <form class="mt-4">
+                            <label for="tableName" class="block text-sm text-gray-400 mb-1">Table Name</label>
+                            <input id="tableName" name="tableName" type="text" placeholder="public.my_table"
+                                   class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-indigo-500" />
+                            <button type="button"
+                                    class="mt-3 w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 px-4 rounded transition-colours"
+                                    hx-post="/api/connector/snapshot"
+                                    hx-vals='js:{"tableName": document.getElementById("tableName").value}'
+                                    hx-headers='{"Content-Type": "application/json"}'
+                                    hx-swap="none">
+                                Trigger Snapshot
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Connector Controls -->
+                <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+                    <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Controls</h2>
+                    <div class="space-y-3">
+                        <button type="button"
+                                class="w-full bg-yellow-600 hover:bg-yellow-500 text-white text-sm font-medium py-2 px-4 rounded transition-colours"
+                                hx-post="/api/connector/pause"
+                                hx-swap="none">
+                            Pause Connector
+                        </button>
+                        <button type="button"
+                                class="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2 px-4 rounded transition-colours"
+                                hx-post="/api/connector/resume"
+                                hx-swap="none">
+                            Resume Connector
+                        </button>
+                    </div>
                 </div>
             </div>
 
         </div>
+
+        <!-- Bottom Row: Error Log (full width) -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 border-l-4 border-l-red-900/50 p-6"
+             hx-get="/dashboard/fragments/errors"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
+            {#include fragments/errors /}
+        </div>
+
     </main>
 </body>
 </html>

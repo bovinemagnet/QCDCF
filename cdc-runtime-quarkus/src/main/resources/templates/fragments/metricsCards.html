@@ -1,0 +1,22 @@
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <!-- Total Events -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Total Events</p>
+        <p class="text-3xl font-bold font-mono text-indigo-400">{totalEvents}</p>
+    </div>
+    <!-- Events/sec -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Events / sec</p>
+        <p class="text-3xl font-bold font-mono text-indigo-400">{eventsPerSecond}</p>
+    </div>
+    <!-- Last LSN -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Last LSN</p>
+        <p class="text-2xl font-bold font-mono text-indigo-400">{lastLsn}</p>
+    </div>
+    <!-- Errors -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Errors</p>
+        <p class="text-3xl font-bold font-mono {#if errorsCount > 0}text-red-400{#else}text-emerald-400{/if}">{errorsCount}</p>
+    </div>
+</div>

@@ -1,11 +1,24 @@
 package com.paulsnow.qcdcf.runtime.service;
 
 import com.paulsnow.qcdcf.core.connector.ConnectorStatus;
+import com.paulsnow.qcdcf.core.snapshot.DefaultChunkPlanner;
+import com.paulsnow.qcdcf.core.snapshot.DefaultSnapshotCoordinator;
+import com.paulsnow.qcdcf.core.snapshot.SnapshotOptions;
+import com.paulsnow.qcdcf.core.sink.EventSink;
+import com.paulsnow.qcdcf.model.TableId;
+import com.paulsnow.qcdcf.postgres.metadata.PostgresTableMetadataReader;
+import com.paulsnow.qcdcf.postgres.metadata.TableMetadata;
+import com.paulsnow.qcdcf.postgres.snapshot.PostgresSnapshotReader;
+import com.paulsnow.qcdcf.postgres.sql.PostgresChunkSqlBuilder;
+import com.paulsnow.qcdcf.postgres.watermark.PostgresWatermarkWriter;
 import com.paulsnow.qcdcf.runtime.bootstrap.ConnectorBootstrap;
+import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -28,9 +41,19 @@ public class ConnectorService {
     @Inject
     ConnectorBootstrap bootstrap;
 
+    @Inject
+    ConnectorRuntimeConfig config;
+
+    @Inject
+    EventSink eventSink;
+
+    @Inject
+    DataSource dataSource;
+
     private final Instant startTime = Instant.now();
     private volatile String lastSnapshotTable;
     private volatile String lastSnapshotStatus = "NONE";
+    private volatile long lastSnapshotRowCount;
 
     /**
      * Pause the connector by stopping the WAL reader.
@@ -63,24 +86,74 @@ public class ConnectorService {
     }
 
     /**
-     * Trigger a snapshot for the specified table.
+     * Triggers a snapshot for the specified table.
      * <p>
-     * This is currently a stub that acknowledges the request.
-     * Actual snapshot execution will be implemented in a future phase.
+     * Parses the table name as {@code schema.table} (defaults to {@code public} schema),
+     * loads metadata, and runs the snapshot coordinator on a background thread.
      *
-     * @param tableName the fully-qualified table name to snapshot
+     * @param tableName the fully-qualified table name (e.g. "public.customer")
      * @return status map acknowledging the snapshot request
      */
     public Map<String, Object> triggerSnapshot(String tableName) {
         LOG.infof("Snapshot requested for table '%s' on connector '%s'", tableName, bootstrap.connectorId());
         lastSnapshotTable = tableName;
-        lastSnapshotStatus = "REQUESTED";
+        lastSnapshotStatus = "RUNNING";
+
+        // Parse table name
+        String schema = "public";
+        String table = tableName;
+        if (tableName.contains(".")) {
+            String[] parts = tableName.split("\\.", 2);
+            schema = parts[0];
+            table = parts[1];
+        }
+        TableId tableId = new TableId(schema, table);
+
+        // Run snapshot on background thread to avoid blocking the REST call
+        Thread snapshotThread = new Thread(() -> executeSnapshot(tableId), "qcdcf-snapshot-" + tableName);
+        snapshotThread.setDaemon(true);
+        snapshotThread.start();
+
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("connectorId", bootstrap.connectorId());
         result.put("tableName", tableName);
         result.put("snapshotStatus", lastSnapshotStatus);
-        result.put("message", "Snapshot request acknowledged — execution deferred");
+        result.put("message", "Snapshot started");
         return result;
+    }
+
+    private void executeSnapshot(TableId tableId) {
+        try (Connection conn = dataSource.getConnection()) {
+            // Load metadata
+            var metadataReader = new PostgresTableMetadataReader();
+            TableMetadata metadata = metadataReader.loadTableMetadata(conn, tableId);
+
+            // Build snapshot pipeline
+            var sqlBuilder = new PostgresChunkSqlBuilder();
+            var snapshotReader = new PostgresSnapshotReader(sqlBuilder, bootstrap.connectorId());
+            var watermarkCoord = new PostgresWatermarkWriter(conn);
+
+            var coordinator = new DefaultSnapshotCoordinator(
+                    watermarkCoord,
+                    new DefaultChunkPlanner(),
+                    (DefaultSnapshotCoordinator.ChunkReader) plan -> {
+                        PostgresSnapshotReader.SnapshotChunkReadResult readResult =
+                                snapshotReader.readChunk(conn, plan, metadata);
+                        return new DefaultSnapshotCoordinator.ChunkReader.ChunkReadResult(
+                                readResult.events(), readResult.result());
+                    },
+                    (events, chunkResult) -> events.forEach(eventSink::publish)
+            );
+
+            int chunkSize = config.source().chunkSize();
+            long rows = coordinator.triggerSnapshot(tableId, new SnapshotOptions(tableId, chunkSize));
+            lastSnapshotRowCount = rows;
+            lastSnapshotStatus = "COMPLETE (" + rows + " rows)";
+            LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
+        } catch (Exception e) {
+            lastSnapshotStatus = "FAILED: " + e.getMessage();
+            LOG.errorf(e, "Snapshot failed for %s", tableId);
+        }
     }
 
     /**

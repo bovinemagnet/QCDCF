@@ -1,6 +1,8 @@
 package com.paulsnow.qcdcf.runtime.dashboard;
 
+import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import com.paulsnow.qcdcf.runtime.service.ConnectorService;
+import com.paulsnow.qcdcf.runtime.service.MetricsService;
 import io.quarkus.qute.Template;
 import io.quarkus.qute.TemplateInstance;
 import jakarta.inject.Inject;
@@ -31,7 +33,29 @@ public class DashboardResource {
     Template statusFragment;
 
     @Inject
+    @io.quarkus.qute.Location("fragments/metricsCards")
+    Template metricsCardsFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/recentEvents")
+    Template recentEventsFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/eventBreakdown")
+    Template eventBreakdownFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/errors")
+    Template errorsFragment;
+
+    @Inject
     ConnectorService connectorService;
+
+    @Inject
+    MetricsService metricsService;
+
+    @Inject
+    ConnectorRuntimeConfig config;
 
     /**
      * Main dashboard page.
@@ -39,7 +63,7 @@ public class DashboardResource {
     @GET
     @Produces(MediaType.TEXT_HTML)
     public TemplateInstance index() {
-        return buildDashboardData(dashboard);
+        return buildFullDashboardData(dashboard);
     }
 
     /**
@@ -49,10 +73,92 @@ public class DashboardResource {
     @Path("/fragments/status")
     @Produces(MediaType.TEXT_HTML)
     public TemplateInstance statusFragment() {
-        return buildDashboardData(statusFragment);
+        return buildStatusData(statusFragment);
     }
 
-    private TemplateInstance buildDashboardData(Template template) {
+    /**
+     * Metrics cards fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/metrics")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance metricsFragment() {
+        return buildMetricsData(metricsCardsFragment);
+    }
+
+    /**
+     * Recent events fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/recent-events")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance recentEventsFragment() {
+        return recentEventsFragment
+                .data("recentEvents", metricsService.recentEvents());
+    }
+
+    /**
+     * Event breakdown fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/breakdown")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance breakdownFragment() {
+        return buildBreakdownData(eventBreakdownFragment);
+    }
+
+    /**
+     * Error log fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/errors")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance errorsFragment() {
+        return errorsFragment
+                .data("recentErrors", metricsService.recentErrors());
+    }
+
+    /**
+     * Builds the full dashboard page data, combining status, metrics, breakdown, and events.
+     */
+    private TemplateInstance buildFullDashboardData(Template template) {
+        String status = connectorService.status().name();
+        Duration uptime = Duration.between(connectorService.startTime(), Instant.now());
+        String uptimeFormatted = String.format("%02d:%02d:%02d",
+                uptime.toHours(), uptime.toMinutesPart(), uptime.toSecondsPart());
+
+        return template
+                // Status data
+                .data("connectorId", connectorService.connectorId())
+                .data("status", status)
+                .data("statusColour", statusColour(status))
+                .data("uptime", uptimeFormatted)
+                .data("slotName", config.source().slotName())
+                .data("publicationName", config.source().publicationName())
+                .data("lastSnapshotTable", connectorService.lastSnapshotTable() != null
+                        ? connectorService.lastSnapshotTable() : "N/A")
+                .data("lastSnapshotStatus", connectorService.lastSnapshotStatus())
+                // Metrics data
+                .data("totalEvents", metricsService.totalEvents())
+                .data("eventsPerSecond", metricsService.eventsPerSecondFormatted())
+                .data("lastLsn", metricsService.lastLsnHex())
+                .data("errorsCount", metricsService.errorsCount())
+                // Breakdown data
+                .data("totalInserts", metricsService.totalInserts())
+                .data("totalUpdates", metricsService.totalUpdates())
+                .data("totalDeletes", metricsService.totalDeletes())
+                .data("totalSnapshotReads", metricsService.totalSnapshotReads())
+                .data("insertPct", metricsService.percentage(metricsService.totalInserts()))
+                .data("updatePct", metricsService.percentage(metricsService.totalUpdates()))
+                .data("deletePct", metricsService.percentage(metricsService.totalDeletes()))
+                .data("snapshotPct", metricsService.percentage(metricsService.totalSnapshotReads()))
+                // Recent events
+                .data("recentEvents", metricsService.recentEvents())
+                // Errors
+                .data("recentErrors", metricsService.recentErrors());
+    }
+
+    private TemplateInstance buildStatusData(Template template) {
         String status = connectorService.status().name();
         Duration uptime = Duration.between(connectorService.startTime(), Instant.now());
         String uptimeFormatted = String.format("%02d:%02d:%02d",
@@ -63,9 +169,31 @@ public class DashboardResource {
                 .data("status", status)
                 .data("statusColour", statusColour(status))
                 .data("uptime", uptimeFormatted)
+                .data("slotName", config.source().slotName())
+                .data("publicationName", config.source().publicationName())
                 .data("lastSnapshotTable", connectorService.lastSnapshotTable() != null
                         ? connectorService.lastSnapshotTable() : "N/A")
                 .data("lastSnapshotStatus", connectorService.lastSnapshotStatus());
+    }
+
+    private TemplateInstance buildMetricsData(Template template) {
+        return template
+                .data("totalEvents", metricsService.totalEvents())
+                .data("eventsPerSecond", metricsService.eventsPerSecondFormatted())
+                .data("lastLsn", metricsService.lastLsnHex())
+                .data("errorsCount", metricsService.errorsCount());
+    }
+
+    private TemplateInstance buildBreakdownData(Template template) {
+        return template
+                .data("totalInserts", metricsService.totalInserts())
+                .data("totalUpdates", metricsService.totalUpdates())
+                .data("totalDeletes", metricsService.totalDeletes())
+                .data("totalSnapshotReads", metricsService.totalSnapshotReads())
+                .data("insertPct", metricsService.percentage(metricsService.totalInserts()))
+                .data("updatePct", metricsService.percentage(metricsService.totalUpdates()))
+                .data("deletePct", metricsService.percentage(metricsService.totalDeletes()))
+                .data("snapshotPct", metricsService.percentage(metricsService.totalSnapshotReads()));
     }
 
     private static String statusColour(String status) {

@@ -52,8 +52,15 @@ public class EventSinkProducer {
                 yield new LoggingEventSink();
             }
         };
-        createdSink = sink;
-        return sink;
+
+        int maxRetries = config.resilience().sinkRetry().maxRetries();
+        String delayStr = config.resilience().sinkRetry().delay();
+        long delayMs = parseDelayMs(delayStr);
+        EventSink retrying = new RetryingEventSink(sink, maxRetries, delayMs);
+        LOG.info("Wrapped sink with RetryingEventSink (maxRetries={}, delay={})", maxRetries, delayStr);
+
+        createdSink = retrying;
+        return retrying;
     }
 
     @PreDestroy
@@ -65,6 +72,13 @@ public class EventSinkProducer {
                 LOG.warn("Error closing EventSink: {}", e.getMessage());
             }
         }
+    }
+
+    private static long parseDelayMs(String delay) {
+        delay = delay.trim().toLowerCase();
+        if (delay.endsWith("ms")) return Long.parseLong(delay.replace("ms", ""));
+        if (delay.endsWith("s")) return (long) (Double.parseDouble(delay.replace("s", "")) * 1000);
+        return Long.parseLong(delay);
     }
 
     private KafkaEventSink createKafkaSink() {

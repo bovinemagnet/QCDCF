@@ -21,5 +21,6 @@ dependencies {
     implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
 
     testImplementation 'io.quarkus:quarkus-junit5'
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
     testImplementation project(':cdc-test-kit')
 }

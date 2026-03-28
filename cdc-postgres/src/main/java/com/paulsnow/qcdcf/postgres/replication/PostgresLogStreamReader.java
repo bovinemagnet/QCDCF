@@ -130,8 +130,7 @@ public class PostgresLogStreamReader {
             case COMMIT -> {
                 lastProcessedLsn = decoded.lsn();
                 lastCommitTimestamp = decoded.commitTimestamp();
-                client.acknowledgeLsn(lastProcessedLsn);
-                saveCheckpoint();
+                commitProgress();
                 LOG.trace("Transaction commit acknowledged: LSN={}", lastProcessedLsn);
                 currentTxId = null;
             }
@@ -166,6 +165,18 @@ public class PostgresLogStreamReader {
         return checkpointManager.load(connectorId)
                 .map(cp -> cp.position().lsn())
                 .orElse(0L);
+    }
+
+    /**
+     * Commits progress by saving checkpoint FIRST, then acknowledging LSN.
+     * <p>
+     * This ordering is critical for at-least-once delivery:
+     * - If checkpoint save fails, LSN is NOT acknowledged — events replay on restart.
+     * - If LSN ack fails after checkpoint save, events may replay — safe (at-least-once).
+     */
+    private void commitProgress() {
+        saveCheckpoint();
+        client.acknowledgeLsn(lastProcessedLsn);
     }
 
     private void saveCheckpoint() {

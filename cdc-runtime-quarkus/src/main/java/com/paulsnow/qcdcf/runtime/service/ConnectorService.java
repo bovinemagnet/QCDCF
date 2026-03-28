@@ -1,6 +1,7 @@
 package com.paulsnow.qcdcf.runtime.service;
 
 import com.paulsnow.qcdcf.core.connector.ConnectorStatus;
+import com.paulsnow.qcdcf.core.exception.SourceReadException;
 import com.paulsnow.qcdcf.core.snapshot.DefaultChunkPlanner;
 import com.paulsnow.qcdcf.core.snapshot.DefaultSnapshotCoordinator;
 import com.paulsnow.qcdcf.core.snapshot.SnapshotOptions;
@@ -16,10 +17,12 @@ import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.context.ManagedExecutor;
+import org.eclipse.microprofile.faulttolerance.Retry;
 import org.jboss.logging.Logger;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -128,6 +131,18 @@ public class ConnectorService {
     }
 
     private void executeSnapshot(TableId tableId) {
+        try {
+            long rows = executeSnapshotWithRetry(tableId);
+            snapshotState.set(new SnapshotState(tableId.canonicalName(), "COMPLETE (" + rows + " rows)", rows));
+            LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
+        } catch (Exception e) {
+            snapshotState.set(new SnapshotState(snapshotState.get().table(), "FAILED: " + e.getMessage(), 0));
+            LOG.errorf(e, "Snapshot failed for %s after retries", tableId);
+        }
+    }
+
+    @Retry(maxRetries = 3, delay = 2000, retryOn = {SourceReadException.class, SQLException.class})
+    long executeSnapshotWithRetry(TableId tableId) throws Exception {
         try (Connection conn = dataSource.getConnection()) {
             // Load metadata
             var metadataReader = new PostgresTableMetadataReader();
@@ -151,12 +166,7 @@ public class ConnectorService {
             );
 
             int chunkSize = config.source().chunkSize();
-            long rows = coordinator.triggerSnapshot(tableId, new SnapshotOptions(tableId, chunkSize));
-            snapshotState.set(new SnapshotState(tableId.canonicalName(), "COMPLETE (" + rows + " rows)", rows));
-            LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
-        } catch (Exception e) {
-            snapshotState.set(new SnapshotState(snapshotState.get().table(), "FAILED: " + e.getMessage(), 0));
-            LOG.errorf(e, "Snapshot failed for %s", tableId);
+            return coordinator.triggerSnapshot(tableId, new SnapshotOptions(tableId, chunkSize));
         }
     }
 

@@ -10,7 +10,7 @@ import java.util.List;
  * @author Paul Snow
  * @since 0.0.0
  */
-public interface EventSink {
+public interface EventSink extends AutoCloseable {
 
     /**
      * Publishes a single event.
@@ -29,4 +29,10 @@ public interface EventSink {
      * @return the result of the publication attempt
      */
     PublishResult publishBatch(List<ChangeEnvelope> events);
+
+    /** Default no-op close. Implementations with resources should override. */
+    @Override
+    default void close() throws Exception {
+        // no-op by default
+    }
 }

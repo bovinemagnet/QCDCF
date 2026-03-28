@@ -17,6 +17,8 @@ dependencies {
     implementation 'io.quarkus:quarkus-rest-qute'
     implementation 'io.quarkus:quarkus-scheduler'
     implementation 'io.quarkus:quarkus-smallrye-context-propagation'
+    implementation 'io.quarkus:quarkus-smallrye-fault-tolerance'
+    implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
 
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation project(':cdc-test-kit')

@@ -1,6 +1,7 @@
 package com.paulsnow.qcdcf.runtime.bootstrap;
 
 import com.paulsnow.qcdcf.core.connector.ConnectorStatus;
+import com.paulsnow.qcdcf.core.exception.SourceReadException;
 import com.paulsnow.qcdcf.core.sink.EventSink;
 import com.paulsnow.qcdcf.core.sink.PublishResult;
 import com.paulsnow.qcdcf.model.ChangeEnvelope;
@@ -16,8 +17,10 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.faulttolerance.Retry;
 import org.jboss.logging.Logger;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -59,6 +62,7 @@ public class ConnectorBootstrap {
     ManagedExecutor executor;
 
     private volatile ConnectorStatus status = ConnectorStatus.STOPPED;
+    private volatile Instant lastSuccessfulConnection;
     private PostgresLogStreamReader reader;
 
     public ConnectorBootstrap(ConnectorRuntimeConfig config) {
@@ -84,7 +88,22 @@ public class ConnectorBootstrap {
      */
     public void startWalReader() {
         status = ConnectorStatus.STARTING;
+        executor.submit(() -> {
+            try {
+                startWalReaderWithRetry();
+            } catch (Exception e) {
+                String hint = diagnoseFailure(e);
+                LOG.errorf("WAL reader permanently failed for connector '%s': %s%s",
+                        config.connector().id(), e.getMessage(), hint);
+                lastError = e.getMessage() + hint;
+                status = ConnectorStatus.FAILED;
+            }
+        });
+    }
 
+    @Retry(maxRetries = -1, delay = 1000, jitter = 200,
+           retryOn = {SourceReadException.class, RuntimeException.class})
+    void startWalReaderWithRetry() {
         PostgresLogicalReplicationClient client = new PostgresLogicalReplicationClient(
                 jdbcUrl, username, password,
                 config.source().slotName(),
@@ -120,19 +139,10 @@ public class ConnectorBootstrap {
 
         reader = new PostgresLogStreamReader(client, decoder, normaliser, metricsSink);
 
-        executor.submit(() -> {
-            try {
-                status = ConnectorStatus.RUNNING;
-                LOG.infof("QCDCF connector '%s' is running", config.connector().id());
-                reader.start(0);
-            } catch (Exception e) {
-                String hint = diagnoseFailure(e);
-                LOG.errorf("WAL reader failed for connector '%s': %s%s",
-                        config.connector().id(), e.getMessage(), hint);
-                lastError = e.getMessage() + hint;
-                status = ConnectorStatus.FAILED;
-            }
-        });
+        lastSuccessfulConnection = Instant.now();
+        status = ConnectorStatus.RUNNING;
+        LOG.infof("QCDCF connector '%s' is running", config.connector().id());
+        reader.start(0);
     }
 
     private String lastError;
@@ -140,6 +150,11 @@ public class ConnectorBootstrap {
     /** Returns the last error message, or null if no error. */
     public String lastError() {
         return lastError;
+    }
+
+    /** Returns the instant of the last successful WAL connection, or null if never connected. */
+    public Instant lastSuccessfulConnection() {
+        return lastSuccessfulConnection;
     }
 
     /** Provides actionable hints based on common failure causes. */

@@ -1,0 +1,28 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Health Checks</h2>
+<div class="space-y-3">
+    <div class="flex justify-between items-centre">
+        <span class="text-gray-400">Source</span>
+        <span class="flex items-centre gap-2">
+            <span class="inline-block w-2 h-2 rounded-full {sourceColour}"></span>
+            <span class="font-mono text-sm {sourceColour}">{sourceStatus}</span>
+        </span>
+    </div>
+    <div class="flex justify-between items-centre">
+        <span class="text-gray-400">Last Connection</span>
+        <span class="font-mono text-sm text-gray-300">{lastConnection}</span>
+    </div>
+    <div class="flex justify-between items-centre">
+        <span class="text-gray-400">Sink</span>
+        <span class="flex items-centre gap-2">
+            <span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span class="font-mono text-sm text-gray-300">{sinkType}</span>
+        </span>
+    </div>
+    <div class="flex justify-between items-centre">
+        <span class="text-gray-400">Liveness</span>
+        <span class="flex items-centre gap-2">
+            <span class="inline-block w-2 h-2 rounded-full {livenessColour}"></span>
+            <span class="font-mono text-sm {livenessColour}">{livenessStatus}</span>
+        </span>
+    </div>
+</div>

@@ -1,3 +1,5 @@
 .Reference
 * xref:reference:index.adoc[Overview]
 * xref:reference:api-model.adoc[API Model]
+* xref:reference:metrics.adoc[Metrics Reference]
+* xref:reference:rest-api.adoc[REST API]

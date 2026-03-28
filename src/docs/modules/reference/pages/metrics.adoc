@@ -1,0 +1,240 @@
+= Metrics Reference
+Paul Snow
+:description: Complete reference for all qcdcf_ prefixed Micrometer metrics, their types, labels, and what they measure. Covers pipeline metrics, resilience counters, and SmallRye Fault Tolerance auto-published metrics.
+include::ROOT:partial$_attributes.adoc[]
+
+// @since 0.0.0
+
+All {project-name} metrics use the `qcdcf_` prefix and are published via Micrometer with the Prometheus registry.
+Metrics are exposed at the `/q/metrics` endpoint on the runtime HTTP port.
+
+For conceptual background on the observability design, see xref:ROOT:architecture.adoc#_observability[Architecture — Observability].
+For deployment configuration including Prometheus scrape targets, see xref:operations:deployment.adoc[Deployment].
+
+NOTE: The current `MetricsService` uses in-memory atomic counters rather than Micrometer `MeterRegistry` bindings.
+The metric names below follow the planned Micrometer registration names that will be used when the service is wired to the registry.
+Dashboard and rate-history data are available via the HTMX dashboard at `/q/dev-ui` in development mode.
+
+== Pipeline Metrics
+
+Core metrics tracking the volume and flow of change events through the CDC pipeline.
+All pipeline metrics carry a `connector` label identifying the source connector instance.
+
+[cols="3,1,4,2",options="header"]
+|===
+|Name
+|Type
+|Description
+|Labels
+
+|`qcdcf_events_processed_total`
+|Counter
+|Total change events successfully processed and delivered to the sink since startup.
+Incremented for every `ChangeEnvelope` recorded by `MetricsService.recordEvent()`.
+|`connector`
+
+|`qcdcf_inserts_total`
+|Counter
+|Total `INSERT` operations captured from the WAL or snapshot.
+|`connector`
+
+|`qcdcf_updates_total`
+|Counter
+|Total `UPDATE` operations captured from the WAL.
+|`connector`
+
+|`qcdcf_deletes_total`
+|Counter
+|Total `DELETE` operations captured from the WAL.
+|`connector`
+
+|`qcdcf_snapshot_rows_read_total`
+|Counter
+|Total rows read across all snapshot chunks (`SNAPSHOT_READ` operations).
+|`connector`, `table`
+
+|`qcdcf_snapshot_chunks_completed_total`
+|Counter
+|Total snapshot chunks that completed successfully.
+|`connector`, `table`
+
+|`qcdcf_errors_total`
+|Counter
+|Total errors recorded by the pipeline.
+Incremented by `MetricsService.recordError()`.
+|`connector`
+
+|`qcdcf_wal_lag_bytes`
+|Gauge
+|Current replication slot lag in bytes.
+Reflects how far behind the replication slot is from the upstream WAL.
+|`connector`, `slot`
+
+|`qcdcf_wal_last_published_lsn`
+|Gauge
+|Last durably checkpointed Log Sequence Number (LSN) as a numeric value.
+Use `qcdcf_wal_last_published_lsn_hex` (dashboard only) for human-readable hex format.
+|`connector`
+
+|`qcdcf_publish_latency_ms`
+|Timer / Histogram
+|End-to-end publish latency in milliseconds, measured from WAL capture to sink acknowledgement.
+|`connector`
+
+|`qcdcf_watermark_windows_open`
+|Gauge
+|Number of currently open watermark windows.
+An open window indicates an in-progress reconciliation between a snapshot chunk and the WAL stream.
+|`connector`
+
+|`qcdcf_reconciliation_collisions_total`
+|Counter
+|Key collisions removed by the reconciliation engine.
+A collision occurs when the same row key appears in both the snapshot chunk and the concurrent WAL stream; the WAL version takes precedence.
+|`connector`, `table`
+
+|`qcdcf_duplicate_replays_total`
+|Counter
+|Duplicate events received after WAL replay.
+Non-zero values indicate at-least-once redelivery in effect.
+|`connector`
+
+|`qcdcf_dead_letter_total`
+|Counter
+|Events routed to the dead-letter store after exhausting delivery attempts.
+|`connector`
+|===
+
+== Resilience Metrics
+
+Counters tracking retry and reconnection activity within the pipeline.
+Non-zero values are expected under transient failure conditions; sustained high rates indicate a persistent problem.
+
+[cols="3,1,4,2",options="header"]
+|===
+|Name
+|Type
+|Description
+|Labels
+
+|`qcdcf_wal_reconnect_attempts_total`
+|Counter
+|Total WAL reconnection attempts since startup.
+Incremented each time the replication connection is lost and a reconnect is initiated.
+Backed by `MetricsService.walReconnectAttempts`.
+|`connector`
+
+|`qcdcf_sink_publish_retries_total`
+|Counter
+|Total sink publish retries since startup.
+Incremented when a delivery attempt to the downstream sink fails and is retried.
+Backed by `MetricsService.sinkPublishRetries`.
+|`connector`
+
+|`qcdcf_snapshot_chunk_retries_total`
+|Counter
+|Total snapshot chunk retries since startup.
+Incremented when a chunk read fails and the chunk is rescheduled.
+Backed by `MetricsService.snapshotChunkRetries`.
+|`connector`, `table`
+|===
+
+== Fault Tolerance Metrics
+
+SmallRye Fault Tolerance automatically publishes Micrometer metrics for methods annotated with `@Retry`, `@CircuitBreaker`, and `@Timeout`.
+These metrics do not carry the `qcdcf_` prefix; they use the `ft.` prefix defined by the MicroProfile Fault Tolerance specification.
+
+[cols="3,1,4,2",options="header"]
+|===
+|Name
+|Type
+|Description
+|Labels
+
+|`ft.retry.calls.total`
+|Counter
+|Total method invocations that passed through a `@Retry` policy.
+The `retried` label indicates whether the initial attempt succeeded (`false`) or retries were required (`true`).
+The `retryResult` label records the outcome: `valueReturned`, `exceptionNotRetryable`, `maxRetriesReached`, or `maxDurationReached`.
+|`method`, `retried`, `retryResult`
+
+|`ft.circuitbreaker.state.total`
+|Counter
+|Total time (in nanoseconds) spent in each circuit-breaker state.
+The `state` label carries `closed`, `open`, or `halfOpen`.
+|`method`, `state`
+
+|`ft.timeout.calls.total`
+|Counter
+|Total method invocations that passed through a `@Timeout` policy.
+The `timedOut` label is `true` when the invocation exceeded its deadline.
+|`method`, `timedOut`
+|===
+
+[NOTE]
+====
+SmallRye Fault Tolerance metrics are only present in the Prometheus output if the corresponding annotations are active on at least one CDI bean method.
+Refer to the link:https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus SmallRye Fault Tolerance guide] for configuration details.
+====
+
+== Accessing Metrics
+
+=== Prometheus Endpoint
+
+The Prometheus text-format scrape endpoint is available at:
+
+[source]
+----
+GET http://<host>:<port>/q/metrics
+----
+
+By default the runtime binds to port `8080`.
+In production deployments the management port may differ; see xref:operations:deployment.adoc[Deployment] for port configuration.
+
+Example scrape configuration for `prometheus.yml`:
+
+[source,yaml]
+----
+scrape_configs:
+  - job_name: qcdcf
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: /q/metrics
+----
+
+=== Filtering by Prefix
+
+To retrieve only `qcdcf_` metrics from the Prometheus endpoint, use the `name[]` query parameter:
+
+[source]
+----
+GET /q/metrics?name[]=qcdcf_events_processed_total&name[]=qcdcf_errors_total
+----
+
+=== Grafana Integration
+
+When connecting Grafana to the Prometheus data source, use the `qcdcf_` prefix as a metric filter in the Explore view to locate all framework metrics quickly.
+The `connector` label is present on every `qcdcf_` metric and is suitable for use as a dashboard variable to filter by connector instance.
+
+A recommended starting set of panels for a connector dashboard:
+
+[cols="2,3",options="header"]
+|===
+|Panel
+|PromQL expression
+
+|Events per second
+|`rate(qcdcf_events_processed_total[1m])`
+
+|WAL lag bytes
+|`qcdcf_wal_lag_bytes`
+
+|Reconciliation collisions (rate)
+|`rate(qcdcf_reconciliation_collisions_total[5m])`
+
+|Dead-letter events (rate)
+|`rate(qcdcf_dead_letter_total[5m])`
+
+|Sink publish retries (rate)
+|`rate(qcdcf_sink_publish_retries_total[5m])`
+|===

@@ -22,5 +22,6 @@ dependencies {
 
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation "org.assertj:assertj-core:${assertjVersion}"
+    testImplementation 'org.mockito:mockito-core:5.14.2'
     testImplementation project(':cdc-test-kit')
 }

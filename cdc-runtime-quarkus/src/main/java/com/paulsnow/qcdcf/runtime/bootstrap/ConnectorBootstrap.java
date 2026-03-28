@@ -10,6 +10,7 @@ import com.paulsnow.qcdcf.postgres.replication.PgOutputMessageDecoder;
 import com.paulsnow.qcdcf.postgres.replication.PostgresLogStreamReader;
 import com.paulsnow.qcdcf.postgres.replication.PostgresLogicalReplicationClient;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
+import com.paulsnow.qcdcf.runtime.service.ConnectorValidator;
 import com.paulsnow.qcdcf.runtime.service.MetricsService;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
@@ -49,6 +50,12 @@ public class ConnectorBootstrap {
     @Inject
     MetricsService metricsService;
 
+    @Inject
+    ConnectorValidator validator;
+
+    @Inject
+    javax.sql.DataSource dataSource;
+
     @ConfigProperty(name = "quarkus.datasource.jdbc.url")
     String jdbcUrl;
 
@@ -76,6 +83,22 @@ public class ConnectorBootstrap {
             status = ConnectorStatus.STOPPED;
             LOG.infof("QCDCF connector '%s' auto-start is disabled — use REST API or dashboard to start", config.connector().id());
             return;
+        }
+
+        if (config.connector().validateOnStartup()) {
+            try (java.sql.Connection conn = dataSource.getConnection()) {
+                if (!validator.validateAll(conn, config.source().slotName(), config.source().publicationName())) {
+                    status = ConnectorStatus.FAILED;
+                    lastError = "Startup validation failed — check logs for details";
+                    LOG.errorf("Connector '%s' failed startup validation", config.connector().id());
+                    return;
+                }
+            } catch (Exception e) {
+                status = ConnectorStatus.FAILED;
+                lastError = "Cannot connect to database: " + e.getMessage();
+                LOG.errorf("Connector '%s' startup validation failed: %s", config.connector().id(), e.getMessage());
+                return;
+            }
         }
 
         startWalReader();

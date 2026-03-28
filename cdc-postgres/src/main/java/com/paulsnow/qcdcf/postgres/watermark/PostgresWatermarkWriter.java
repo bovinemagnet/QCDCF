@@ -54,6 +54,13 @@ public class PostgresWatermarkWriter implements WatermarkCoordinator {
         return window.close(now);
     }
 
+    @Override
+    public void cancelWindow(WatermarkWindow window) {
+        LOG.warn("Cancelling watermark window {} — no high watermark written", window.windowId());
+        // No database cleanup needed — the low watermark row remains but will be
+        // overwritten by the next openWindow() call.
+    }
+
     private void writeBoundary(UUID windowId, WatermarkBoundary.Boundary boundary,
                                TableId tableId, int chunkIndex, Instant timestamp) {
         try (PreparedStatement ps = connection.prepareStatement(INSERT_SQL)) {

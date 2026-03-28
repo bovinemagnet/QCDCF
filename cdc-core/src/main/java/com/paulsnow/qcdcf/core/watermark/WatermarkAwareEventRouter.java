@@ -22,6 +22,8 @@ import java.util.*;
  *       merges buffered log events with snapshot data, removing key collisions</li>
  *   <li>The merged result is emitted to the sink</li>
  * </ol>
+ * <strong>Thread safety:</strong> This class is NOT thread-safe. It must only be called
+ * from the WAL reader thread. All methods assume single-threaded access.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -132,6 +134,22 @@ public class WatermarkAwareEventRouter {
         activeWindow = null;
         bufferedLogEvents.clear();
         snapshotChunkEvents = List.of();
+    }
+
+    /**
+     * Cancels the given window without reconciliation.
+     * <p>
+     * Used when a snapshot chunk fails mid-window. Discards buffered events
+     * and resets window state so a new window can be opened for retry.
+     *
+     * @param window the window to cancel
+     */
+    public void cancelWindow(WatermarkWindow window) {
+        LOG.warn("Cancelling watermark window {} for table {} chunk {}",
+                window.windowId(), window.tableId(), window.chunkIndex());
+        bufferedLogEvents.clear();
+        snapshotChunkEvents = List.of();
+        activeWindow = null;
     }
 
     /**

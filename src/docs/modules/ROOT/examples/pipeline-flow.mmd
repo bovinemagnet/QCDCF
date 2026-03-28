@@ -1,0 +1,15 @@
+flowchart TD
+    WAL[WAL Reader\nPostgresLogicalReplicationClient]
+    DEC[PgOutput Decoder\nPgOutputMessageDecoder]
+    NORM[Event Normaliser\nEventNormalizer]
+    WC[Watermark Coordinator\nWatermarkCoordinator]
+    REC[Reconciliation Engine\nReconciliationEngine]
+    DEL[Delivery Coordinator\nDeliveryCoordinator]
+    SINK[Event Sink\nEventSink]
+
+    WAL -->|raw pgoutput bytes| DEC
+    DEC -->|typed replication message| NORM
+    NORM -->|ChangeEnvelope| WC
+    WC -->|windowed events + chunk rows| REC
+    REC -->|merged event sequence| DEL
+    DEL -->|acknowledged publish| SINK

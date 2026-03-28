@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
+        mavenLocal()
+    }
+    plugins {
+        id "${quarkusPluginId}" version "${quarkusPluginVersion}"
+    }
+}
+rootProject.name = 'qcdcf'
+
+include 'cdc-api-model'
+include 'cdc-core'
+include 'cdc-postgres'
+include 'cdc-runtime-quarkus'
+include 'cdc-test-kit'

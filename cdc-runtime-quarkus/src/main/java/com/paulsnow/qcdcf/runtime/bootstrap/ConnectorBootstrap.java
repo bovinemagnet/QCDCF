@@ -1,0 +1,201 @@
+package com.paulsnow.qcdcf.runtime.bootstrap;
+
+import com.paulsnow.qcdcf.core.connector.ConnectorStatus;
+import com.paulsnow.qcdcf.core.sink.EventSink;
+import com.paulsnow.qcdcf.core.sink.PublishResult;
+import com.paulsnow.qcdcf.model.ChangeEnvelope;
+import com.paulsnow.qcdcf.postgres.replication.PgOutputEventNormaliser;
+import com.paulsnow.qcdcf.postgres.replication.PgOutputMessageDecoder;
+import com.paulsnow.qcdcf.postgres.replication.PostgresLogStreamReader;
+import com.paulsnow.qcdcf.postgres.replication.PostgresLogicalReplicationClient;
+import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
+import com.paulsnow.qcdcf.runtime.messaging.WalIngressChannelBridge;
+import io.quarkus.runtime.ShutdownEvent;
+import io.quarkus.runtime.StartupEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
+
+import java.util.List;
+
+/**
+ * Bootstraps the CDC connector on application startup.
+ * <p>
+ * Creates the WAL capture pipeline components (replication client, decoder, normaliser)
+ * and wires them through the {@link WalIngressChannelBridge} into the reactive messaging
+ * channels. The blocking replication reader runs on a dedicated daemon thread.
+ *
+ * @author Paul Snow
+ * @since 0.0.0
+ */
+@ApplicationScoped
+public class ConnectorBootstrap {
+
+    private static final Logger LOG = Logger.getLogger(ConnectorBootstrap.class);
+
+    private final ConnectorRuntimeConfig config;
+
+    @Inject
+    WalIngressChannelBridge bridge;
+
+    @ConfigProperty(name = "quarkus.datasource.jdbc.url")
+    String jdbcUrl;
+
+    @ConfigProperty(name = "quarkus.datasource.username")
+    String username;
+
+    @ConfigProperty(name = "quarkus.datasource.password")
+    String password;
+
+    private volatile ConnectorStatus status = ConnectorStatus.STOPPED;
+    private PostgresLogStreamReader reader;
+    private Thread readerThread;
+
+    public ConnectorBootstrap(ConnectorRuntimeConfig config) {
+        this.config = config;
+    }
+
+    void onStart(@Observes StartupEvent event) {
+        LOG.infof("QCDCF connector '%s' starting (auto-start=%s)", config.connector().id(), config.connector().autoStart());
+
+        if (!config.connector().autoStart()) {
+            status = ConnectorStatus.STOPPED;
+            LOG.infof("QCDCF connector '%s' auto-start is disabled — use REST API or dashboard to start", config.connector().id());
+            return;
+        }
+
+        startWalReader();
+    }
+
+    /**
+     * Builds and starts the WAL reader pipeline on a background thread.
+     * On failure, sets status to FAILED with a descriptive error message
+     * but does NOT crash the application — the REST API and dashboard remain available.
+     */
+    public void startWalReader() {
+        status = ConnectorStatus.STARTING;
+
+        PostgresLogicalReplicationClient client = new PostgresLogicalReplicationClient(
+                jdbcUrl, username, password,
+                config.source().slotName(),
+                config.source().publicationName()
+        );
+
+        PgOutputMessageDecoder decoder = new PgOutputMessageDecoder();
+        PgOutputEventNormaliser normaliser = new PgOutputEventNormaliser(config.connector().id());
+
+        EventSink bridgeSink = new EventSink() {
+            @Override
+            public PublishResult publish(ChangeEnvelope event) {
+                bridge.emit(event);
+                return new PublishResult.Success(1);
+            }
+
+            @Override
+            public PublishResult publishBatch(List<ChangeEnvelope> events) {
+                events.forEach(bridge::emit);
+                return new PublishResult.Success(events.size());
+            }
+        };
+
+        reader = new PostgresLogStreamReader(client, decoder, normaliser, bridgeSink);
+
+        readerThread = new Thread(() -> {
+            try {
+                reader.start(0);
+            } catch (Exception e) {
+                String hint = diagnoseFailure(e);
+                LOG.errorf("WAL reader failed for connector '%s': %s%s",
+                        config.connector().id(), e.getMessage(), hint);
+                lastError = e.getMessage() + hint;
+                status = ConnectorStatus.FAILED;
+            }
+        }, "qcdcf-wal-reader-" + config.connector().id());
+        readerThread.setDaemon(true);
+        readerThread.start();
+
+        status = ConnectorStatus.RUNNING;
+        LOG.infof("QCDCF connector '%s' is running", config.connector().id());
+    }
+
+    private String lastError;
+
+    /** Returns the last error message, or null if no error. */
+    public String lastError() {
+        return lastError;
+    }
+
+    /** Provides actionable hints based on common failure causes. */
+    private static String diagnoseFailure(Exception e) {
+        String msg = e.getMessage() != null ? e.getMessage() : "";
+        if (e.getCause() != null && e.getCause().getMessage() != null) {
+            msg += " " + e.getCause().getMessage();
+        }
+
+        if (msg.contains("permission denied to start WAL sender") || msg.contains("REPLICATION attribute")) {
+            return "\n  → Fix: ALTER ROLE <username> WITH REPLICATION;\n"
+                 + "  → See: /api/cli/check or the operations documentation";
+        }
+        if (msg.contains("replication slot") && msg.contains("does not exist")) {
+            return "\n  → Fix: SELECT pg_create_logical_replication_slot('<slot>', 'pgoutput');\n"
+                 + "  → Or the slot will be created automatically if the user has CREATE privileges";
+        }
+        if (msg.contains("publication") && msg.contains("does not exist")) {
+            return "\n  → Fix: CREATE PUBLICATION <name> FOR TABLE <table1>, <table2>;\n";
+        }
+        if (msg.contains("Connection refused") || msg.contains("connect")) {
+            return "\n  → Fix: Check quarkus.datasource.jdbc.url and ensure PostgreSQL is running";
+        }
+        return "";
+    }
+
+    void onStop(@Observes ShutdownEvent event) {
+        LOG.infof("QCDCF connector '%s' shutting down", config.connector().id());
+        if (reader != null) {
+            reader.stop();
+        }
+        if (readerThread != null) {
+            readerThread.interrupt();
+        }
+        status = ConnectorStatus.STOPPED;
+        LOG.infof("QCDCF connector '%s' stopped", config.connector().id());
+    }
+
+    public ConnectorStatus status() {
+        return status;
+    }
+
+    public String connectorId() {
+        return config.connector().id();
+    }
+
+    /**
+     * Request the connector to stop (pause).
+     * Stops the WAL reader and sets the status to STOPPED.
+     */
+    public void requestStop() {
+        LOG.infof("Stop requested for connector '%s'", config.connector().id());
+        if (reader != null) {
+            reader.stop();
+        }
+        if (readerThread != null) {
+            readerThread.interrupt();
+        }
+        status = ConnectorStatus.STOPPED;
+    }
+
+    /**
+     * Request the connector to start (resume).
+     * Rebuilds the pipeline and starts a new reader thread.
+     */
+    public void requestStart() {
+        if (status == ConnectorStatus.RUNNING || status == ConnectorStatus.STARTING) {
+            LOG.warnf("Connector '%s' is already %s — ignoring start request", config.connector().id(), status);
+            return;
+        }
+        LOG.infof("Start requested for connector '%s'", config.connector().id());
+        onStart(null);
+    }
+}

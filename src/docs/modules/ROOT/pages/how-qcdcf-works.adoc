@@ -1,0 +1,291 @@
+= How QCDCF Works
+Paul Snow
+:description: A detailed explanation of how QCDCF implements CDC using the Netflix DBLog watermark pattern, the snapshot algorithm, pipeline stages, and delivery guarantees.
+include::partial$_attributes.adoc[]
+
+This page explains how QCDCF solves the problem of bootstrapping existing data whilst simultaneously streaming live changes — without table locks, without downtime, and without missing events.
+
+If you are new to CDC, read xref:what-is-cdc.adoc[What is Change Data Capture?] first.
+
+== The Challenge of Consistent Snapshots
+
+A WAL-based CDC connector can capture every change from the moment it starts.
+But what about the rows that already exist in the database before the connector is first connected?
+
+This is the bootstrapping problem, and it affects any new CDC deployment:
+
+* A new downstream system needs a full copy of existing data before it can start consuming changes.
+* A search index that has drifted from the source of truth needs to be rebuilt.
+* A downstream service that suffered a data corruption needs a targeted re-sync of specific rows.
+
+=== Why Streaming Alone Is Not Enough
+
+The WAL only records _changes_.
+It does not contain the full current state of every row.
+WAL retention is also finite — changes from months ago are no longer in the log.
+
+To get the full current state, you need to read the table directly.
+
+=== The Naive Approach and Its Problems
+
+The obvious solution is to stop the change stream, read the entire table as a snapshot, then resume the stream.
+
+This approach has two serious problems:
+
+. *Downtime or stalled delivery* — while the snapshot is running, no changes are being forwarded to downstream systems.
+For large tables this can take hours, during which downstream systems are stale.
+
+. *Gap or overlap* — if you stop streaming before the snapshot and resume after, you risk missing events that occurred during the snapshot.
+If you overlap them naively, you risk emitting stale snapshot state that overrides a newer change that occurred during the read.
+
+=== The Netflix DBLog Insight
+
+Netflix published a paper describing an algorithm called DBLog that solves this precisely.
+The key insight is:
+
+*You can read chunks of a table whilst streaming continues, as long as you have a mechanism to detect and resolve any overlap between what you read and what the stream captured during the same window.*
+
+QCDCF implements this algorithm using PostgreSQL's WAL stream and a dedicated watermark table.
+
+== The Watermark Algorithm
+
+The watermark algorithm is the heart of QCDCF.
+It allows snapshot reads and live WAL streaming to run concurrently, and then merges the results correctly.
+
+=== Step-by-Step
+
+Here is the algorithm as QCDCF executes it for each chunk of a table:
+
+. *Continue streaming* — the WAL reader is always running, capturing live INSERTs, UPDATEs, and DELETEs in real time.
+
+. *Write a LOW watermark* — before reading a chunk, QCDCF writes a recognisable UUID value to a dedicated row in the `cdc_control.watermark` table.
+This UPDATE is a real database write, so it flows through the WAL stream as a normal change event — but with a UUID that QCDCF recognises as a watermark marker.
++
+[source,sql]
+----
+UPDATE cdc_control.watermark SET value = 'LOW-UUID-001' WHERE id = 1;
+----
+
+. *Read the chunk* — QCDCF reads a bounded chunk of rows from the target table using keyset pagination (never offset pagination).
+The chunk is ordered by primary key.
+No table lock is required.
++
+[source,sql]
+----
+SELECT * FROM public.customer
+WHERE customer_id > :lastKey
+ORDER BY customer_id
+LIMIT 1000;
+----
+
+. *Write a HIGH watermark* — after the chunk read completes, QCDCF writes a second UUID to the same watermark row.
+This also flows through the WAL stream.
++
+[source,sql]
+----
+UPDATE cdc_control.watermark SET value = 'HIGH-UUID-001' WHERE id = 1;
+----
+
+. *The WAL stream catches up* — the WAL reader continues processing events.
+When it observes the LOW watermark UUID in the stream, it knows a snapshot window is open and begins buffering events.
+
+. *Reconcile the window* — when the WAL reader observes the HIGH watermark UUID, the window closes.
+The reconciliation engine now has two sets of data:
++
+--
+* The WAL events that occurred between LOW and HIGH (buffered during step 5).
+* The rows read from the table during step 3 (the snapshot chunk).
+--
++
+The reconciliation rule is straightforward:
++
+--
+** For every WAL event inside the window: publish the event in order, and *remove the matching row from the snapshot chunk*.
+** After all WAL events are emitted: emit the *surviving snapshot rows* (those not matched by any WAL event) as `SNAPSHOT` events.
+--
+
+. *Repeat* — move on to the next chunk.
+Continue until the entire table is covered.
+
+=== Why This Works
+
+A snapshot row represents the state of a row at the moment the chunk query executed.
+If that same row was also modified during the watermark window, the WAL event reflects a newer state.
+
+By removing the snapshot row when a collision is found, QCDCF ensures that:
+
+* The WAL event (newer state) is always authoritative.
+* The snapshot row (potentially older state) never overrides a more recent change.
+* No row is emitted twice.
+
+Rows that were _not_ modified during the window have no matching WAL event, so the snapshot row survives and is emitted.
+
+TIP: The algorithm does not require the chunk read and the WAL stream to be synchronised.
+They run independently.
+The reconciliation step happens after the fact, using the watermark UUIDs as boundary markers that are already embedded in the WAL stream.
+
+=== A Concrete Example: Alice
+
+Consider a `customer` table with three rows:
+
+[cols="1,2,2", options="header"]
+|===
+|id |name |email
+
+|1
+|Alice
+|alice@example.com
+
+|2
+|Bob
+|bob@example.com
+
+|3
+|Carol
+|carol@example.com
+|===
+
+QCDCF starts a snapshot of this table.
+
+. The LOW watermark `LOW-001` is written to the WAL at LSN 1010.
+. The chunk query runs and reads all three rows.
+. While the chunk query is running, Alice updates her email address.
+This appears in the WAL as `UPDATE customer SET email = 'alice@new.com' WHERE id = 1` at LSN 1015.
+. The HIGH watermark `HIGH-001` is written to the WAL at LSN 1020.
+
+The WAL reader, catching up through the stream, sees:
+
+* `LOW-001` at LSN 1010 → enter window mode, start buffering events.
+* `UPDATE customer id=1 email=alice@new.com` at LSN 1015 → buffer the event; note that `id=1` is colliding.
+* `HIGH-001` at LSN 1020 → close window; begin reconciliation.
+
+The reconciliation engine now:
+
+. Emits the buffered WAL event: `UPDATE customer id=1 email=alice@new.com`.
+. Removes `id=1` from the snapshot chunk (it collided with the WAL event).
+. Emits the surviving snapshot rows: `SNAPSHOT customer id=2` and `SNAPSHOT customer id=3`.
+
+Result: Alice's new email is the authoritative record.
+Bob and Carol are captured from the snapshot.
+Nothing is missed; nothing is duplicated.
+
+[mermaid]
+....
+include::example$watermark-alice-example.mmd[]
+....
+
+NOTE: The chunk read used `READ COMMITTED` isolation, not a serialisable snapshot across the whole table.
+This is intentional and correct for the DBLog algorithm.
+The reconciliation step handles any inconsistency introduced by concurrent writes during the chunk read.
+
+== The Pipeline
+
+Events flow through QCDCF in a series of stages, each with a distinct responsibility.
+
+[mermaid]
+....
+include::example$pipeline-flow.mmd[]
+....
+
+WAL Reader (`PostgresLogStreamReader`)::
+Connects to the PostgreSQL logical replication slot.
+Reads `pgoutput`-encoded binary messages in transaction commit order.
+Runs on a dedicated single-threaded executor per connector to preserve ordering.
+This is the only component that communicates directly with the PostgreSQL replication API.
+
+pgoutput Decoder (`PgOutputMessageDecoder`)::
+Decodes raw binary `pgoutput` frames into typed `PostgresReplicationMessage` objects.
+Extracts the LSN, transaction ID, commit timestamp, table name, operation type, and before/after column values.
+Handles `BEGIN`, `COMMIT`, `RELATION`, `INSERT`, `UPDATE`, and `DELETE` message types.
+
+Event Normaliser (`PgOutputEventNormaliser`)::
+Converts `PostgresReplicationMessage` into the canonical `ChangeEnvelope` domain record.
+Watermark row updates are recognised here by their UUID values and tagged as `OperationType.WATERMARK`.
+All other events are tagged as `INSERT`, `UPDATE`, or `DELETE` with `CaptureMode.LOG`.
+
+Watermark Coordinator::
+Tracks open watermark windows.
+When the LOW watermark event is observed, the coordinator enters window mode and buffers subsequent events.
+When the HIGH watermark is observed, it hands the complete window — buffered events plus the chunk rows — to the reconciliation engine.
+
+Reconciliation Engine::
+Implements the key-collision removal rule.
+For each WAL event in the window, it removes the matching row key from the snapshot chunk.
+Surviving chunk rows are appended as `SNAPSHOT` events after the WAL events.
+This is the centre of the DBLog algorithm.
+
+Delivery Coordinator::
+Publishes the merged, ordered event sequence to the configured `EventSink`.
+Only after the sink acknowledges successful publication does the delivery coordinator advance the durable WAL checkpoint.
+This is the mechanism that enforces at-least-once delivery.
+
+Event Sink (`EventSink`)::
+Receives `ChangeEnvelope` batches and performs the actual publication.
+The MVP ships with `LoggingEventSink` and `InMemoryEventSink`.
+Kafka is added later as a sink adapter without modifying any upstream stage.
+
+== At-Least-Once Delivery
+
+QCDCF guarantees that every change is delivered *at least once*.
+
+=== How It Is Achieved
+
+The delivery coordinator advances the durable WAL checkpoint (the LSN that PostgreSQL acknowledges to the replication slot) only after the event sink confirms successful publication.
+
+If QCDCF crashes before publication is confirmed, on restart it resumes from the last checkpointed LSN.
+The PostgreSQL replication slot may replay some events that were already published before the crash — this is an expected and accepted behaviour.
+
+=== What This Means for Consumers
+
+Consumers must be *idempotent* — they must handle receiving the same event more than once without corrupting their state.
+Common approaches:
+
+* Use the `eventId` UUID in the `ChangeEnvelope` as a deduplication key.
+* Design writes to be naturally idempotent (upserts rather than inserts).
+* Track processed event IDs in a consumer-side store.
+
+=== Why Not Exactly-Once?
+
+Exactly-once delivery across a distributed system requires coordinating the source (PostgreSQL), the framework (QCDCF), and the sink (Kafka or another broker) in a single atomic operation.
+This is significantly more complex and is deferred until the core algorithm is proven.
+
+For the vast majority of use cases, at-least-once with idempotent consumers is the correct trade-off: simpler to implement, simpler to operate, and correct in practice.
+
+IMPORTANT: Do not advance the WAL checkpoint in your sink implementation before publication is durable.
+The checkpoint advance in the delivery coordinator depends on the sink returning a successful acknowledgement.
+
+== What Makes QCDCF Different
+
+QCDCF is not a generic CDC toolkit.
+It makes deliberate choices that set it apart:
+
+Plain Java core::
+The reconciliation engine, watermark coordinator, chunk planner, and checkpoint manager are all plain Java with no CDI annotations or Quarkus dependencies.
+This makes them independently testable with standard JUnit 5 — no application server required.
+Correctness is verified in unit tests, not through integration-only coverage.
+
+PostgreSQL-first::
+QCDCF uses PostgreSQL's native logical replication primitives directly: publications, logical replication slots, and the `pgoutput` output plugin.
+There is no lowest-common-denominator abstraction that weakens the PostgreSQL implementation to support other databases.
+
+Pluggable sinks::
+All event delivery passes through the `EventSink` interface.
+The CDC core never imports Kafka APIs.
+Swapping from `LoggingEventSink` to `KafkaEventSink` requires no changes to any upstream component.
+
+Operational visibility::
+QCDCF exposes metrics, health endpoints, and structured logging for every component of the pipeline.
+The watermark window depth, reconciliation collision count, snapshot progress, and WAL lag are all observable in real time.
+See xref:architecture.adoc#observability[Observability] for the full metrics list.
+
+Correct by design::
+The watermark reconciliation is the product.
+The REST API, configuration model, and deployment tooling are secondary.
+The test kit (`cdc-test-kit`) exists specifically to exercise the edge cases where watermark-based CDC can fail silently if implemented incorrectly.
+
+== See Also
+
+* xref:what-is-cdc.adoc[What is Change Data Capture?] — the problem and the PostgreSQL primitives
+* xref:use-cases.adoc[Use Cases] — concrete examples of what you can build
+* xref:architecture.adoc[Architecture] — detailed component and sequence diagrams
+* xref:modules-overview.adoc[Module Structure] — module responsibilities and dependency graph

@@ -1,0 +1,265 @@
+= Architecture
+Paul Snow
+:description: Comprehensive architecture reference for QCDCF covering system context, pipeline stages, watermark reconciliation, and design decisions.
+include::partial$_attributes.adoc[]
+
+This page describes the system architecture of QCDCF: how the components fit together, how the CDC pipeline is structured, how the watermark reconciliation algorithm works, and what design decisions were made and why.
+
+== System Context
+
+QCDCF sits between a PostgreSQL source database and one or more downstream consumers.
+It reads committed changes using PostgreSQL logical replication and publishes normalised change events to a pluggable sink.
+
+[mermaid]
+....
+include::example$architecture-overview.mmd[]
+....
+
+The key components in this view:
+
+PostgreSQL Source DB::
+Contains application tables, a publication listing tracked tables, a logical replication slot per connector, and a dedicated watermark control schema (`cdc_control`).
+
+Source Adapter (`cdc-postgres`)::
+Implements all PostgreSQL-specific behaviour: reading from the logical replication slot using the `pgoutput` output plugin, writing watermark rows, executing chunked snapshot queries, and reading table metadata from `pg_catalog`.
+
+CDC Core Engine (`cdc-core`)::
+Contains the domain logic that is not PostgreSQL-specific: watermark coordination, reconciliation, chunk planning, checkpoint management, and delivery coordination.
+This module is plain Java with no CDI or Quarkus dependencies.
+
+Metadata Store::
+A framework-owned PostgreSQL schema separate from the source database.
+Stores connector state, WAL checkpoints, snapshot job progress, watermark windows, and dead-letter events.
+
+Event Sink::
+An interface abstraction that receives `ChangeEnvelope` batches for publication.
+The MVP ships `LoggingEventSink` and `InMemoryEventSink`.
+Kafka is added later as a sink adapter without modifying the CDC core.
+
+== Pipeline Stages
+
+The internal CDC pipeline transforms raw WAL bytes into acknowledged, checkpointed change events.
+
+[mermaid]
+....
+include::example$pipeline-flow.mmd[]
+....
+
+WAL Reader::
+Connects to the PostgreSQL logical replication slot and receives a stream of `pgoutput` binary messages in transaction commit order.
+One WAL reader per connector, running on a dedicated single-threaded executor to preserve ordering.
+
+PgOutput Decoder::
+Decodes raw `pgoutput` binary frames into typed `PostgresReplicationMessage` objects containing LSN, transaction ID, commit timestamp, relation name, operation type, old values, and new values.
+
+Event Normaliser::
+Converts `PostgresReplicationMessage` into the canonical `ChangeEnvelope` domain record defined in `cdc-api-model`.
+Watermark row updates are recognised here and tagged with `OperationType.WATERMARK`.
+
+Watermark Coordinator::
+Tracks open watermark windows.
+When a low watermark event is observed in the stream, the coordinator enters window mode and begins buffering events.
+When the high watermark is observed, it hands the buffered window to the reconciliation engine.
+
+Reconciliation Engine::
+The heart of the DBLog algorithm.
+Takes the log events inside a watermark window, the snapshot chunk rows that were read between low and high watermark writes, and removes any chunk row whose primary key appears in the log events.
+Surviving chunk rows are emitted as `SNAPSHOT` events after the log events.
+
+Delivery Coordinator::
+Publishes the merged, ordered event sequence to the configured `EventSink`.
+Only after the sink acknowledges publication does the delivery coordinator advance the durable WAL checkpoint.
+
+Event Sink::
+Receives `ChangeEnvelope` records and performs the actual publication.
+In the MVP this is a logging or in-memory sink.
+Later this is `KafkaEventSink`.
+
+== Watermark Reconciliation Algorithm
+
+The watermark algorithm is what allows snapshot reads and live CDC streaming to run concurrently without table locks and without allowing older snapshot state to override newer log history.
+
+[mermaid]
+....
+include::example$watermark-sequence.mmd[]
+....
+
+=== Step-by-Step
+
+. The `SnapshotCoordinator` signals the start of a chunk window by calling `WatermarkWriter.writeLowWatermark(windowId)`.
+The writer executes `UPDATE cdc_control.watermark SET value = lowUUID` on the source database.
+This update flows through the logical replication slot as a normal WAL event with a recognisable UUID value.
+
+. The `SnapshotReader` executes the chunk query against the source database under `READ COMMITTED` isolation.
+Rows committed before the query executes are included.
+Rows committed after may also appear, which is acceptable — they are handled by the collision rule.
+
+. The `WatermarkWriter` writes the high watermark: `UPDATE cdc_control.watermark SET value = highUUID`.
+
+. Meanwhile, the WAL reader continues processing the live stream.
+When it observes the low watermark UUID event, the watermark coordinator enters _window mode_.
+Log events in the window are buffered.
+
+. When the high watermark UUID event is observed, the window is closed.
+The reconciliation engine:
+  * publishes all log events between low and high watermark in order,
+  * removes any snapshot row whose primary key matches a key seen in those log events,
+  * appends the surviving snapshot rows as `SNAPSHOT` events.
+
+. Normal live log streaming resumes.
+
+=== Why This Works
+
+A snapshot row represents the state of a row at the time the chunk was read.
+If that row was also modified during the watermark window (between low and high), the log event reflects a newer state.
+Removing the snapshot row ensures the newer log event is the authoritative representation of that key.
+
+The algorithm does not require a long pause in log processing.
+The pause for downstream forwarding is local and brief — just long enough to write the low watermark, execute the chunk query, and write the high watermark.
+The reconciliation work happens as the WAL stream catches up to the high watermark.
+
+=== Key Constraint
+
+Chunk reads use keyset pagination — `WHERE pk > :lastPk ORDER BY pk LIMIT :chunkSize` — never offset pagination.
+Offset pagination becomes incorrect on live tables because inserted or deleted rows shift the offset window.
+Keyset pagination is stable under concurrent writes.
+
+== Deployment Model
+
+For the MVP, QCDCF deploys as a single Quarkus service instance per connector.
+One active instance owns the connector at a time, enforced by a database-backed lease in the metadata store.
+
+Recommended deployment modes in order of progression:
+
+Single instance per connector::
+Simplest. One Quarkus process, one connector, one PostgreSQL source. Suitable for MVP and early production.
+
+Multiple connectors per runtime::
+A single Quarkus process manages multiple connectors, each with its own WAL reader, snapshot coordinator, and delivery pipeline.
+Requires stable connector ownership leasing.
+
+Active/passive failover::
+Two instances where one is active and one is passive, switching on lease expiry.
+Similar in spirit to the DBLog active-passive model.
+
+NOTE: Multi-node distributed execution of a single connector is explicitly out of scope for the MVP.
+
+== Key Design Decisions
+
+=== PostgreSQL `pgoutput` Protocol
+
+QCDCF uses `pgoutput`, the built-in PostgreSQL logical decoding output plugin introduced in PostgreSQL 10.
+It requires no additional server-side plugins and is supported by the standard JDBC replication API.
+
+=== `READ COMMITTED` for Chunk Snapshots
+
+Chunk reads execute under `READ COMMITTED` isolation rather than a serialisable snapshot across the entire table.
+This is intentional.
+The DBLog algorithm does not require a globally consistent snapshot — it requires that the chunk read reflects committed rows around the watermark window, and then the reconciliation step removes any inconsistencies inside the window.
+`READ COMMITTED` is sufficient and avoids long-running transactions.
+
+=== Keyset Pagination
+
+All chunk queries use keyset pagination (`WHERE pk > :lastPk`), not offset pagination (`LIMIT n OFFSET m`).
+Offset pagination on live tables produces incorrect results when rows are inserted or deleted between chunks.
+Keyset pagination is deterministic and stable under concurrent writes.
+
+=== At-Least-Once Delivery
+
+QCDCF guarantees at-least-once delivery, not exactly-once.
+PostgreSQL replication slots may replay recent changes after a crash because the durable slot position can lag behind the last consumed LSN.
+The framework handles this through:
+
+* never advancing the WAL checkpoint before the sink acknowledges publication,
+* tolerating and logging duplicate events at the sink level,
+* making sink implementations idempotent where possible.
+
+Exactly-once semantics are deferred until after the core algorithm is proven.
+
+=== Plain Java Core
+
+The reconciliation engine, watermark coordinator, chunk planner, and checkpoint manager are all plain Java with no CDI annotations or Quarkus dependencies.
+This makes them independently testable with standard JUnit 5 — no application server required.
+Quarkus exists at the shell level: wiring, configuration, lifecycle, HTTP endpoints, and health checks.
+
+== Module Responsibilities
+
+QCDCF is a Gradle multi-module project.
+A brief summary of each module:
+
+[cols="1,2"]
+|===
+|Module |Responsibility
+
+|`cdc-api-model`
+|Stable `ChangeEnvelope`, `TableId`, `RowKey`, `SourcePosition`, and enums. No framework dependencies.
+
+|`cdc-core`
+|Reconciliation engine, watermark coordinator, chunk planner, snapshot coordinator, delivery coordinator, checkpoint manager. Plain Java.
+
+|`cdc-postgres`
+|WAL reader, `pgoutput` decoder, watermark writer, chunked snapshot reader, table metadata reader. PostgreSQL-specific.
+
+|`cdc-runtime-quarkus`
+|Quarkus shell: REST admin API, health checks, metrics, internal messaging channels, CDI wiring.
+
+|`cdc-test-kit`
+|Testcontainers fixtures, snapshot/log overlap scenario library, reconciliation test assertions.
+|===
+
+See xref:modules-overview.adoc[Modules] for the full dependency graph.
+
+== Observability
+
+=== Metrics
+
+All metrics use the `qcdcf_` prefix and are tagged per connector.
+Key metrics include:
+
+* `qcdcf_wal_lag_bytes` — replication slot lag in bytes
+* `qcdcf_wal_last_published_lsn` — last durably checkpointed LSN
+* `qcdcf_publish_latency_ms` — end-to-end publish latency
+* `qcdcf_snapshot_rows_read_total` — total rows read across all chunks
+* `qcdcf_snapshot_chunks_completed_total` — completed chunk count
+* `qcdcf_watermark_windows_open` — currently open watermark windows
+* `qcdcf_reconciliation_collisions_total` — key collisions removed by reconciliation
+* `qcdcf_duplicate_replays_total` — duplicate events received after WAL replay
+* `qcdcf_dead_letter_total` — events routed to dead-letter store
+
+=== Health Endpoints
+
+Quarkus health endpoints are available at:
+
+* `/q/health/live` — liveness: the process is running
+* `/q/health/ready` — readiness: metadata store reachable, source database reachable, connector ownership valid
+
+=== Structured Logging
+
+All log output uses structured JSON format in production deployments.
+Key diagnostic fields include `connectorId`, `tableId`, `lsn`, `windowId`, and `chunkId`.
+
+== MVP Boundaries
+
+=== In Scope for MVP
+
+* PostgreSQL source with one publication per connector
+* One logical replication slot per connector
+* One active snapshot window per table at a time
+* Watermark-based reconciliation using `cdc_control.watermark`
+* Keyset chunked snapshots ordered by primary key
+* `LoggingEventSink` and `InMemoryEventSink`
+* Minimal REST admin endpoints: start, pause, snapshot trigger, status
+* Metadata persistence for checkpoints and snapshot progress
+* Integration tests using Testcontainers PostgreSQL
+
+=== Deferred Until After MVP
+
+* Kafka sink (`KafkaEventSink`)
+* Multi-node connector execution or clustering
+* Non-PostgreSQL databases
+* Tables without a stable primary key
+* Multiple simultaneous watermark windows per table
+* Schema registry integration
+* Exactly-once delivery semantics
+* GUI administration console
+* Generalised database plugin ecosystem

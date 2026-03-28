@@ -1,0 +1,52 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Slot Details</h2>
+{#if slotHealth != null}
+<div class="overflow-x-auto">
+    <table class="w-full text-sm">
+        <tbody class="divide-y divide-gray-700">
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium w-48">Slot Name</td>
+                <td class="py-2 font-mono text-gray-100">{slotHealth.slotName}</td>
+            </tr>
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium">Plugin</td>
+                <td class="py-2 font-mono text-gray-100">{slotHealth.plugin}</td>
+            </tr>
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium">Slot Type</td>
+                <td class="py-2 font-mono text-gray-100">{slotHealth.slotType}</td>
+            </tr>
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium">Active</td>
+                <td class="py-2">
+                    {#if slotHealth.active}
+                    <span class="inline-flex items-centre gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-900/50 text-emerald-400 border border-emerald-700">Active</span>
+                    {#else}
+                    <span class="inline-flex items-centre gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-900/50 text-red-400 border border-red-700">Inactive</span>
+                    {/if}
+                </td>
+            </tr>
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium">Confirmed Flush LSN</td>
+                <td class="py-2 font-mono text-gray-100">{slotHealth.confirmedFlushLsnHex}</td>
+            </tr>
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium">Restart LSN</td>
+                <td class="py-2 font-mono text-gray-100">{slotHealth.restartLsnHex}</td>
+            </tr>
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium">WAL Lag</td>
+                <td class="py-2 font-mono font-bold {lagColour}">{slotHealth.walLagFormatted}</td>
+            </tr>
+            <tr>
+                <td class="py-2 pr-4 text-gray-400 font-medium">Catalog Xmin</td>
+                <td class="py-2 font-mono text-gray-100">{slotHealth.catalogXmin}</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{#else}
+<div class="text-centre py-8">
+    <p class="text-gray-500 italic">Replication slot not found or database unavailable.</p>
+    <p class="text-xs text-gray-600 mt-2">Expected slot: <span class="font-mono">{slotName}</span></p>
+</div>
+{/if}

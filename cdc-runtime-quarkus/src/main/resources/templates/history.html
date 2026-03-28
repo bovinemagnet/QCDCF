@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QCDCF — Metrics History</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+        <div class="flex items-center justify-between max-w-7xl mx-auto">
+            <h1 class="text-xl font-bold text-indigo-400">Metrics History</h1>
+            <div class="flex items-center gap-4">
+                <a href="/dashboard" class="text-sm text-gray-400 hover:text-indigo-400">&larr; Dashboard</a>
+                <a href="/dashboard/replication" class="text-sm text-gray-400 hover:text-indigo-400">Replication Health &rarr;</a>
+                <a href="/dashboard/snapshots" class="text-sm text-gray-400 hover:text-indigo-400">Snapshots &amp; Watermarks &rarr;</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-6 py-8">
+        <!-- Events/sec over last 60 seconds (large chart) -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-6">
+            <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Events per Second (last 60s)</h2>
+            <div hx-get="/dashboard/fragments/history-events" hx-trigger="every 2s" hx-swap="innerHTML">
+                {eventsLargeSparkline.raw}
+            </div>
+        </div>
+
+        <!-- Operation breakdown over time -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">INSERTs / sec</h2>
+                <div hx-get="/dashboard/fragments/history-inserts" hx-trigger="every 2s" hx-swap="innerHTML">
+                    {insertsLargeSparkline.raw}
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">UPDATEs / sec</h2>
+                <div hx-get="/dashboard/fragments/history-updates" hx-trigger="every 2s" hx-swap="innerHTML">
+                    {updatesLargeSparkline.raw}
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">DELETEs / sec</h2>
+                <div hx-get="/dashboard/fragments/history-deletes" hx-trigger="every 2s" hx-swap="innerHTML">
+                    {deletesLargeSparkline.raw}
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Errors / sec</h2>
+                <div hx-get="/dashboard/fragments/history-errors" hx-trigger="every 2s" hx-swap="innerHTML">
+                    {errorsLargeSparkline.raw}
+                </div>
+            </div>
+        </div>
+
+        <!-- Summary table of last 60 seconds -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+            <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Snapshot History (last 60s)</h2>
+            <div class="overflow-x-auto" hx-get="/dashboard/fragments/history-table" hx-trigger="every 5s" hx-swap="innerHTML">
+                {#include fragments/historyTable /}
+            </div>
+        </div>
+    </main>
+</body>
+</html>

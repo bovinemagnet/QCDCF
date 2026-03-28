@@ -1,0 +1,31 @@
+= Reference
+Paul Snow
+:description: Overview of the QCDCF reference documentation, covering the API model, core interfaces, and planned additions.
+include::ROOT:partial$_attributes.adoc[]
+
+The reference section contains precise, technical documentation for the stable interfaces, types, and configuration surfaces that make up {project-name}.
+Pages here describe what things are and how they behave.
+For conceptual explanations and workflow guidance, see the xref:ROOT:architecture.adoc[Architecture] page and the xref:developer-guide:index.adoc[Developer Guide].
+
+== In This Section
+
+xref:api-model.adoc[API Model]::
+Detailed reference for every type in `com.paulsnow.qcdcf.model` and the `EventSink` interface in `com.paulsnow.qcdcf.core.sink`.
+Covers `ChangeEnvelope`, `OperationType`, `CaptureMode`, `TableId`, `RowKey`, `SourcePosition`, `WatermarkContext`, `EventSink`, and `PublishResult`.
+Includes a serialised JSON example of a complete change event.
+
+== Planned Additions
+
+The following reference pages are planned for future releases:
+
+Core Engine Interfaces::
+Reference documentation for the interfaces in `com.paulsnow.qcdcf.core`: `ReconciliationEngine`, `WatermarkCoordinator`, `SnapshotCoordinator`, `DeliveryCoordinator`, and `CheckpointManager`.
+
+REST Admin API::
+OpenAPI-style documentation for the connector lifecycle and snapshot trigger endpoints exposed by `cdc-runtime-quarkus`.
+
+Metrics Reference::
+Full listing of all `qcdcf_` prefixed Micrometer metrics, their labels, units, and what they measure.
+
+Configuration Reference::
+The configuration reference is maintained in the main module: xref:ROOT:configuration.adoc[Configuration Reference].

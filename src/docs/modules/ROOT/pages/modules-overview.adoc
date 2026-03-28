@@ -1,0 +1,213 @@
+= Modules Overview
+Paul Snow
+:description: Description of each QCDCF module, its responsibilities, and the dependency graph.
+include::partial$_attributes.adoc[]
+
+QCDCF is a Gradle multi-module project.
+Each module has a single focused responsibility and a clearly bounded dependency scope.
+This page describes each module and shows how they depend on one another.
+
+== Module Dependency Graph
+
+[mermaid]
+....
+include::example$module-dependencies.mmd[]
+....
+
+The dependency hierarchy is strictly layered:
+`cdc-api-model` has no internal dependencies.
+`cdc-core` depends only on `cdc-api-model`.
+`cdc-postgres` depends on `cdc-core` and `cdc-api-model`.
+`cdc-runtime-quarkus` depends on `cdc-postgres`, `cdc-core`, and `cdc-api-model`.
+`cdc-test-kit` depends on `cdc-core` and `cdc-api-model` only, keeping it usable without PostgreSQL-specific code.
+
+== Module Descriptions
+
+=== `cdc-api-model`
+
+*Purpose:* Stable domain records and enums shared across all modules.
+
+This module is the boundary contract of the entire system.
+It defines the types that flow between the source adapter, the core engine, and the sinks.
+It has no Quarkus dependencies, no persistence annotations, and no framework coupling.
+
+Key types:
+
+`ChangeEnvelope`::
+The canonical change event record.
+Contains event ID, table identity, row key, operation type, capture mode, before and after values, source position, watermark context, and headers.
+
+`TableId`::
+Identifies a table by schema and name.
+Provides a `canonicalName()` method returning `schema.table`.
+
+`RowKey`::
+Identifies a specific row within a table by its primary key values.
+
+`SourcePosition`::
+Records the WAL position (LSN), transaction ID, and commit timestamp of the originating change.
+
+`WatermarkContext`::
+Associates a change event with a specific watermark window by window ID, low watermark UUID, and high watermark UUID.
+
+`OperationType`::
+Enumeration: `INSERT`, `UPDATE`, `DELETE`, `SNAPSHOT`, `WATERMARK`.
+
+`CaptureMode`::
+Enumeration: `LOG`, `SNAPSHOT`, `CONTROL`.
+
+This module must remain boring and stable.
+Any change here is a breaking change for all modules.
+
+=== `cdc-core`
+
+*Purpose:* Core interfaces and default implementations.
+This module is the actual product.
+
+`cdc-core` contains the domain logic that is not PostgreSQL-specific.
+All types in this module are plain Java — no CDI annotations, no Quarkus dependencies.
+This design makes the core independently testable with standard JUnit 5.
+
+Key responsibilities:
+
+Watermark coordination (`WatermarkCoordinator`)::
+Tracks open watermark windows.
+Receives log events from the normalised stream, detects low and high watermark events, buffers events inside the window, and hands the closed window to the reconciliation engine.
+
+Reconciliation engine (`ReconciliationEngine`)::
+Implements the DBLog key-collision removal rule.
+For each log event inside a watermark window, the matching row key is removed from the chunk rows.
+Surviving chunk rows are emitted as `SNAPSHOT` events after the log events.
+
+Chunk planning (`ChunkPlanner`)::
+Generates deterministic chunk boundaries based on table metadata and snapshot options.
+Produces a sequence of `SnapshotChunkPlan` objects that drive the chunked read loop.
+
+Snapshot coordination (`SnapshotCoordinator`)::
+Manages snapshot job lifecycle — full table, per-table, and targeted key snapshot modes.
+Orchestrates the sequence: write low watermark → read chunk → write high watermark → hand to reconciliation.
+
+Delivery coordination (`DeliveryCoordinator`)::
+Publishes the merged event sequence to the configured `EventSink`.
+Advances the durable WAL checkpoint only after successful acknowledgement from the sink.
+
+Checkpoint management (`CheckpointManager`)::
+Loads and saves WAL position checkpoints and chunk snapshot progress.
+Ensures the connector can restart from a known-good position after failure.
+
+Connector state machine (`ConnectorStateMachine`)::
+Explicit state model with states: `CREATED`, `STARTING`, `RUNNING`, `PAUSED`, `STOPPING`, `STOPPED`, `FAILED`.
+
+Connector supervisor (`ConnectorSupervisor`)::
+Owns the lifecycle of one connector: start, pause, resume, stop.
+Coordinates the WAL reader, snapshot coordinator, and delivery coordinator.
+
+Sink abstraction (`EventSink`)::
+The most important design decision for long-term replaceability.
+The interface exposes `publish(ChangeEnvelope)` and `publishBatch(List<ChangeEnvelope>)`.
+MVP implementations: `LoggingEventSink`, `InMemoryEventSink`.
+
+=== `cdc-postgres`
+
+*Purpose:* PostgreSQL-specific source adapter implementation.
+
+This module will represent the majority of implementation effort in the MVP.
+It provides all the PostgreSQL primitives required by `cdc-core`.
+
+Key components:
+
+WAL reader (`PostgresLogStreamReader`)::
+Connects to a logical replication slot using the PostgreSQL JDBC replication API.
+Reads `pgoutput` binary messages in commit order.
+Runs on a dedicated single-threaded executor per connector.
+
+`pgoutput` decoder (`PgOutputMessageDecoder`)::
+Decodes raw `pgoutput` binary frames into typed `PostgresReplicationMessage` objects.
+Handles `BEGIN`, `COMMIT`, `RELATION`, `INSERT`, `UPDATE`, and `DELETE` message types.
+
+Event normaliser (`PgOutputEventNormalizer`)::
+Converts `PostgresReplicationMessage` into `ChangeEnvelope`.
+Recognises watermark UUID values and tags the corresponding events with `OperationType.WATERMARK`.
+
+Watermark writer (`PostgresWatermarkWriter`)::
+Writes low and high watermark rows by executing `UPDATE cdc_control.watermark SET value = :uuid` on the source database.
+These updates flow through the replication slot as recognisable WAL events.
+
+Snapshot reader (`PostgresSnapshotReader`)::
+Executes chunk queries under `READ COMMITTED` isolation using keyset pagination.
+Queries are generated by `PostgresChunkSqlBuilder`, which handles both single-column and composite primary keys.
+
+Table metadata reader (`PostgresTableMetadataReader`)::
+Introspects `pg_catalog` to discover primary key columns, replica identity setting, column types, and TOAST-prone columns.
+
+Replica identity validator (`ReplicaIdentityValidator`)::
+Checks that each tracked table has a suitable replica identity for update and delete replication.
+Tables without a stable primary key are rejected during connector initialisation.
+
+=== `cdc-runtime-quarkus`
+
+*Purpose:* The operational shell.
+
+This module provides the Quarkus-specific wiring that makes the CDC engine runnable as a service.
+It depends on all other modules except `cdc-test-kit`.
+
+Responsibilities:
+
+REST admin API::
+Exposes endpoints for connector lifecycle management and snapshot triggering:
++
+--
+* `POST /connectors/\{id}/start`
+* `POST /connectors/\{id}/pause`
+* `POST /connectors/\{id}/snapshots/table`
+* `GET /connectors/\{id}/status`
+* `GET /connectors/\{id}/progress`
+--
+
+Health checks::
+Implements Quarkus `HealthCheck` beans that verify: metadata database reachable, source database reachable for active connectors, replication slot accessible, and no stalled checkpoint.
+
+Metrics::
+Registers Micrometer gauges and counters for all `qcdcf_` prefixed metrics.
+
+Internal messaging pipeline::
+Uses Quarkus internal messaging channels to pass normalised events between pipeline stages asynchronously.
+Provides back-pressure support without requiring a broker in the MVP.
+
+CDI wiring::
+Produces and injects `ConnectorSupervisor`, `EventSink`, `CheckpointManager`, and other core objects using CDI.
+
+Configuration::
+Maps Quarkus configuration properties (`cdc.connectors.*`) into the connector configuration model.
+
+=== `cdc-test-kit`
+
+*Purpose:* Testing support for snapshot/log overlap scenarios and reconciliation correctness.
+
+This module is not optional.
+Watermark-based CDC is correct on happy paths and subtle on edge cases.
+The test kit exists to make the important edge cases easy to reproduce and assert on.
+
+Testcontainers fixtures::
+`PostgresTestFixture` starts a PostgreSQL container with logical replication enabled, creates the `cdc_control` schema, and provides helper methods for creating publications and replication slots.
+
+Scenario library::
+Pre-built test scenarios for the critical overlap cases:
+
+* update to a row while a snapshot chunk is in progress,
+* multiple updates to the same key between low and high watermark,
+* delete after the row is read in a chunk but before the high watermark closes,
+* connector restart after chunk read but before publish completion,
+* duplicate replay from the last known WAL position.
+
+Reconciliation assertions::
+Custom assertion helpers for verifying that the reconciliation output sequence is correct: log events precede snapshot rows, no stale snapshot state overrides newer log history, no key appears twice.
+
+NOTE: `cdc-test-kit` depends only on `cdc-core` and `cdc-api-model`.
+It does not depend on `cdc-postgres` or `cdc-runtime-quarkus`.
+PostgreSQL-specific test behaviour is provided through the Testcontainers fixture, not through compile-time coupling to the adapter.
+
+== See Also
+
+* xref:architecture.adoc[Architecture] — pipeline stages, watermark algorithm, and design decisions
+* xref:getting-started.adoc[Getting Started] — build and run instructions

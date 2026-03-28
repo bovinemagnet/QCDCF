@@ -1,0 +1,30 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Connector Status</h2>
+<div class="space-y-3">
+    <div class="flex justify-between">
+        <span class="text-gray-400">Connector ID</span>
+        <span class="font-mono text-indigo-300">{connectorId}</span>
+    </div>
+    <div class="flex justify-between items-center">
+        <span class="text-gray-400">Status</span>
+        <span class="inline-flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full {statusColour} bg-current"></span>
+            <span class="font-mono {statusColour}">{status}</span>
+        </span>
+    </div>
+    <div class="flex justify-between">
+        <span class="text-gray-400">Uptime</span>
+        <span class="font-mono text-gray-300">{uptime}</span>
+    </div>
+    <div class="flex justify-between">
+        <span class="text-gray-400">Slot Name</span>
+        <span class="font-mono text-gray-300">{slotName}</span>
+    </div>
+    <div class="flex justify-between">
+        <span class="text-gray-400">Publication</span>
+        <span class="font-mono text-gray-300">{publicationName}</span>
+    </div>
+    <div class="flex justify-between">
+        <span class="text-gray-400">Snapshot</span>
+        <span class="font-mono text-gray-300">{lastSnapshotStatus}</span>
+    </div>
+</div>

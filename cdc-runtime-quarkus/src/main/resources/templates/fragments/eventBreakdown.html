@@ -1,0 +1,43 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Event Breakdown</h2>
+<div class="space-y-3">
+    <!-- INSERTs -->
+    <div>
+        <div class="flex justify-between text-sm mb-1">
+            <span class="text-emerald-400">INSERTs</span>
+            <span class="font-mono text-gray-300">{totalInserts}</span>
+        </div>
+        <div class="w-full bg-gray-700 rounded-full h-2">
+            <div class="bg-emerald-500 h-2 rounded-full transition-all duration-500" style="width: {insertPct}%"></div>
+        </div>
+    </div>
+    <!-- UPDATEs -->
+    <div>
+        <div class="flex justify-between text-sm mb-1">
+            <span class="text-blue-400">UPDATEs</span>
+            <span class="font-mono text-gray-300">{totalUpdates}</span>
+        </div>
+        <div class="w-full bg-gray-700 rounded-full h-2">
+            <div class="bg-blue-500 h-2 rounded-full transition-all duration-500" style="width: {updatePct}%"></div>
+        </div>
+    </div>
+    <!-- DELETEs -->
+    <div>
+        <div class="flex justify-between text-sm mb-1">
+            <span class="text-red-400">DELETEs</span>
+            <span class="font-mono text-gray-300">{totalDeletes}</span>
+        </div>
+        <div class="w-full bg-gray-700 rounded-full h-2">
+            <div class="bg-red-500 h-2 rounded-full transition-all duration-500" style="width: {deletePct}%"></div>
+        </div>
+    </div>
+    <!-- SNAPSHOT_READs -->
+    <div>
+        <div class="flex justify-between text-sm mb-1">
+            <span class="text-purple-400">SNAPSHOT_READs</span>
+            <span class="font-mono text-gray-300">{totalSnapshotReads}</span>
+        </div>
+        <div class="w-full bg-gray-700 rounded-full h-2">
+            <div class="bg-purple-500 h-2 rounded-full transition-all duration-500" style="width: {snapshotPct}%"></div>
+        </div>
+    </div>
+</div>

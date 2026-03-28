@@ -1,0 +1,336 @@
+= Deployment
+Paul Snow
+:description: Deployment guide for QCDCF covering JVM, native, and container deployment modes.
+include::ROOT:partial$_attributes.adoc[]
+
+{project-name} ships as a standard Quarkus application and can be deployed as a JVM
+process, a native binary, or a container image. This page covers each deployment mode,
+environment variable configuration, and the production readiness checklist.
+
+== Building Before Deployment
+
+Before deploying, build the application:
+
+[source,bash]
+----
+gradle21w :cdc-runtime-quarkus:build
+----
+
+The Quarkus fast-JAR layout is written to
+`cdc-runtime-quarkus/build/quarkus-app/`.
+
+== Running as a JVM Application
+
+[source,bash]
+----
+java -jar cdc-runtime-quarkus/build/quarkus-app/quarkus-run.jar
+----
+
+Ensure `JAVA_HOME` points to a Java {java-version} JDK. The application listens on port
+`8080` by default.
+
+To override the listening port:
+
+[source,bash]
+----
+java -Dquarkus.http.port=9090 -jar cdc-runtime-quarkus/build/quarkus-app/quarkus-run.jar
+----
+
+== Container Deployment
+
+Three Dockerfiles are provided under `cdc-runtime-quarkus/src/main/docker/`:
+
+[cols="2,4", options="header"]
+|===
+|Dockerfile |Description
+
+|`Dockerfile.jvm`
+|JVM mode. Based on `ubi9/openjdk-{java-version}-runtime`. Recommended for most deployments.
+
+|`Dockerfile.native`
+|Native binary. Smallest JVM footprint; requires a GraalVM native build.
+
+|`Dockerfile.native-micro`
+|Native binary on a minimal UBI micro base image. Smallest possible image size.
+|===
+
+=== JVM Image
+
+Build the application first, then build the image:
+
+[source,bash]
+----
+gradle21w :cdc-runtime-quarkus:build
+
+docker build \
+  -f cdc-runtime-quarkus/src/main/docker/Dockerfile.jvm \
+  -t qcdcf:latest \
+  cdc-runtime-quarkus/build/quarkus-app/
+----
+
+Run the image:
+
+[source,bash]
+----
+docker run --rm -p 8080:8080 \
+  -e QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://db:5432/mydb \
+  -e QUARKUS_DATASOURCE_USERNAME=qcdcf \
+  -e QUARKUS_DATASOURCE_PASSWORD=secret \
+  -e QCDCF_SOURCE_PUBLICATION_NAME=qcdcf_pub \
+  -e QCDCF_SOURCE_SLOT_NAME=qcdcf_slot \
+  qcdcf:latest
+----
+
+=== Native Image
+
+[source,bash]
+----
+gradle21w :cdc-runtime-quarkus:build -Dquarkus.native.enabled=true
+
+docker build \
+  -f cdc-runtime-quarkus/src/main/docker/Dockerfile.native \
+  -t qcdcf:native \
+  cdc-runtime-quarkus/build/
+----
+
+[WARNING]
+====
+Native compilation requires GraalVM with `native-image` on `PATH` and at least 8 GB of
+available RAM. Build times are significantly longer than the JVM build.
+====
+
+== Environment Variable Configuration
+
+All `qcdcf.*` and `quarkus.*` configuration properties can be overridden via environment
+variables. Quarkus maps them using the following rule: replace `.` with `_`, convert to
+upper case, and prefix as appropriate.
+
+[cols="2,2,3", options="header"]
+|===
+|Property |Environment Variable |Description
+
+|`quarkus.datasource.jdbc.url`
+|`QUARKUS_DATASOURCE_JDBC_URL`
+|JDBC URL for the source PostgreSQL database.
+
+|`quarkus.datasource.username`
+|`QUARKUS_DATASOURCE_USERNAME`
+|Database username (use the dedicated CDC role).
+
+|`quarkus.datasource.password`
+|`QUARKUS_DATASOURCE_PASSWORD`
+|Database password. Store in a secrets manager; never in source control.
+
+|`qcdcf.source.publication-name`
+|`QCDCF_SOURCE_PUBLICATION_NAME`
+|Name of the PostgreSQL publication to subscribe to.
+
+|`qcdcf.source.slot-name`
+|`QCDCF_SOURCE_SLOT_NAME`
+|Logical replication slot name. Created automatically on first start.
+
+|`qcdcf.source.connector-id`
+|`QCDCF_SOURCE_CONNECTOR_ID`
+|Unique identifier for this connector instance. Used in checkpoint records.
+
+|`quarkus.http.port`
+|`QUARKUS_HTTP_PORT`
+|HTTP port the REST API and health endpoints listen on. Defaults to `8080`.
+|===
+
+TIP: For a full list of available properties, visit the Quarkus Dev UI at
+`http://localhost:8080/q/dev-ui` and navigate to *Configuration*.
+
+[[rest-api]]
+== REST API
+
+=== Connector Control
+
+[cols="1,2,4", options="header"]
+|===
+|Method |Path |Description
+
+|GET
+|`/api/connector/status`
+|Returns the connector ID and current status (e.g. `RUNNING`, `PAUSED`, `SNAPSHOTTING`).
+
+|GET
+|`/api/connector/progress`
+|Returns snapshot progress: current table, chunk index, and estimated completion.
+
+|POST
+|`/api/connector/pause`
+|Pauses the WAL reader. In-flight events are completed before the reader stops.
+
+|POST
+|`/api/connector/resume`
+|Resumes the WAL reader from the last confirmed LSN.
+
+|POST
+|`/api/connector/snapshot`
+|Triggers a full table snapshot. The request body must be JSON:
+`{"tableName": "public.customer"}`
+|===
+
+=== CLI / Diagnostics
+
+[cols="1,2,4", options="header"]
+|===
+|Method |Path |Description
+
+|GET
+|`/api/cli/check`
+|Validates all PostgreSQL prerequisites: connectivity, WAL level, replication slot,
+publication, replica identity for each published table, and watermark table presence.
+Returns `passed`, `failed`, `ready`, and a `checks` array with per-item status.
+
+|GET
+|`/api/cli/tables`
+|Lists all tables in the configured publication. For each table, reports the schema,
+table name, primary key columns, replica identity, column count, and approximate row count.
+
+|GET
+|`/api/cli/about`
+|Returns version and build information for the running instance.
+
+|GET
+|`/api/cli/version`
+|Returns the {project-name} version string.
+|===
+
+=== Example: Prerequisite Check
+
+[source,bash]
+----
+curl -s http://localhost:8080/api/cli/check | jq .
+----
+
+A successful response looks like:
+
+[source,json]
+----
+{
+  "passed": 7,
+  "failed": 0,
+  "ready": true,
+  "checks": [
+    { "check": "Database connection",    "status": "OK" },
+    { "check": "WAL level",              "status": "OK", "value": "logical" },
+    { "check": "Replication slot 'qcdcf_slot'", "status": "OK", "active": "false" },
+    { "check": "Publication 'qcdcf_pub'","status": "OK" },
+    { "check": "Published tables",       "status": "OK", "count": "2" },
+    { "check": "Table public.customer",  "status": "OK", "pk": "id", "identity": "d" },
+    { "check": "Watermark table",        "status": "OK" }
+  ]
+}
+----
+
+=== Example: Trigger a Snapshot
+
+[source,bash]
+----
+curl -s -X POST http://localhost:8080/api/connector/snapshot \
+     -H 'Content-Type: application/json' \
+     -d '{"tableName": "public.customer"}' | jq .
+----
+
+== Health Endpoints
+
+[cols="2,4", options="header"]
+|===
+|Endpoint |Purpose
+
+|`GET /q/health`
+|Combined liveness and readiness response.
+
+|`GET /q/health/live`
+|Liveness probe. Returns HTTP 200 when the JVM is running.
+
+|`GET /q/health/ready`
+|Readiness probe. Returns HTTP 200 when the connector can reach the database.
+Used by Kubernetes to gate traffic.
+|===
+
+== Metrics
+
+Prometheus-format metrics are available at `/q/metrics`. All {project-name} application
+metrics use the `qcdcf_` prefix. Integrate with your Prometheus scrape configuration:
+
+[source,yaml]
+----
+scrape_configs:
+  - job_name: qcdcf
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: /q/metrics
+----
+
+== Dashboard
+
+A web dashboard is available at `http://localhost:8080/dashboard`. It provides a real-time
+view of connector status, snapshot progress, and recent change events.
+
+== Docker Compose — Full Stack
+
+The following example starts PostgreSQL and {project-name} together for local development
+or end-to-end testing. See xref:postgresql-setup.adoc[PostgreSQL Setup] for the database
+preparation steps.
+
+[source,yaml]
+----
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=4
+        -c max_wal_senders=4
+    environment:
+      POSTGRES_DB: qcdcf
+      POSTGRES_USER: qcdcf
+      POSTGRES_PASSWORD: qcdcf
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qcdcf"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qcdcf:
+    image: qcdcf:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres:5432/qcdcf
+      QUARKUS_DATASOURCE_USERNAME: qcdcf
+      QUARKUS_DATASOURCE_PASSWORD: qcdcf
+      QCDCF_SOURCE_PUBLICATION_NAME: qcdcf_pub
+      QCDCF_SOURCE_SLOT_NAME: qcdcf_slot
+      QCDCF_SOURCE_CONNECTOR_ID: local-dev
+----
+
+NOTE: The `depends_on` health check ensures {project-name} does not attempt to connect
+before PostgreSQL has finished starting. This is especially important on slow machines
+where the container initialisation sequence can take several seconds.
+
+== Production Checklist
+
+Before promoting to production, verify the following:
+
+* [ ] `wal_level = logical` is set in `postgresql.conf` and the server has been restarted.
+* [ ] The CDC role has the `REPLICATION` attribute: `ALTER ROLE qcdcf WITH REPLICATION;`
+* [ ] A publication exists and includes all tables to be captured, plus `qcdcf_watermark`.
+* [ ] All captured tables have a supported replica identity (`d`, `f`, or `i` — not `n`).
+* [ ] The `qcdcf_watermark` and `qcdcf_checkpoint` tables exist and the CDC role has
+  appropriate grants.
+* [ ] `/api/cli/check` returns `"ready": true` with zero failed checks.
+* [ ] Container resource limits are set: at least 512 MB RAM for JVM mode.
+* [ ] The database password is stored in a secrets manager, not in a `.env` file.
+* [ ] Replication slot disk usage is monitored; alert if the slot lag grows unexpectedly.
+* [ ] Liveness and readiness probes are configured in your container orchestration platform.

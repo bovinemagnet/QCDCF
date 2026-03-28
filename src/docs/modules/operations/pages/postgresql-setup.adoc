@@ -1,0 +1,331 @@
+= PostgreSQL Setup for CDC
+Paul Snow
+:description: Step-by-step guide for configuring PostgreSQL as a Change Data Capture source for QCDCF.
+include::ROOT:partial$_attributes.adoc[]
+
+This guide covers all the steps required to prepare a PostgreSQL database for use with {project-name}.
+The setup includes enabling logical replication, creating a dedicated CDC user, defining publications,
+and provisioning the framework's internal tables.
+
+== Prerequisites
+
+Before you begin, ensure the following are in place:
+
+* PostgreSQL 16 or later is installed and running.
+* You have access to a superuser account, or a role with sufficient privileges to modify server
+  configuration and manage replication objects.
+* Logical replication support is available in your PostgreSQL build (included in all standard distributions).
+
+NOTE: PostgreSQL 16 introduced improvements to logical replication permissions. Earlier versions may
+require superuser privileges for some operations described in this guide.
+
+== Enable Logical Replication
+
+PostgreSQL uses the Write-Ahead Log (WAL) to stream change events. The `wal_level` parameter must
+be set to `logical` before {project-name} can consume changes.
+
+Check the current setting:
+
+[source,sql]
+----
+SHOW wal_level;
+----
+
+If the result is not `logical`, update `postgresql.conf` with the following values and restart PostgreSQL:
+
+[source,properties]
+----
+wal_level = logical
+max_replication_slots = 4
+max_wal_senders = 4
+----
+
+[IMPORTANT]
+====
+A PostgreSQL restart is required after changing `wal_level`. This is a server-level configuration change
+and cannot be applied dynamically.
+====
+
+To locate your `postgresql.conf` file:
+
+[source,sql]
+----
+SHOW config_file;
+----
+
+== Create the CDC User
+
+Create a dedicated database role for {project-name}. Using a dedicated role follows the principle of
+least privilege and makes it straightforward to audit and revoke access.
+
+[source,sql]
+----
+CREATE ROLE qcdcf WITH LOGIN PASSWORD 'qcdcf' REPLICATION; -- <1>
+
+GRANT CONNECT ON DATABASE mydb TO qcdcf; -- <2>
+GRANT USAGE ON SCHEMA public TO qcdcf;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO qcdcf;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO qcdcf; -- <3>
+----
+<1> The `REPLICATION` attribute is required for WAL streaming. See the warning below.
+<2> Replace `mydb` with the name of your target database.
+<3> Ensures that tables created after this point are also readable by the CDC user.
+
+[WARNING]
+====
+The `REPLICATION` attribute is mandatory. Without it, the connector will fail immediately on startup
+with the following error:
+
+[source]
+----
+FATAL: permission denied to start WAL sender
+Detail: Only roles with the REPLICATION attribute may start a WAL sender process.
+----
+
+To add the attribute to an existing role:
+
+[source,sql]
+----
+ALTER ROLE qcdcf WITH REPLICATION;
+----
+====
+
+TIP: In production environments, use a strong, randomly generated password and store it in a secrets
+manager rather than hardcoding it in configuration files.
+
+== Create a Publication
+
+A PostgreSQL publication defines the set of tables whose changes are replicated. {project-name}
+requires a publication to exist before it can open a replication connection.
+
+To publish specific tables:
+
+[source,sql]
+----
+CREATE PUBLICATION qcdcf_pub FOR TABLE public.customer, public.orders;
+----
+
+To publish all tables in the database:
+
+[source,sql]
+----
+CREATE PUBLICATION qcdcf_pub FOR ALL TABLES;
+----
+
+NOTE: Only tables with a supported replica identity (see the next section) will produce change events.
+Tables excluded from the publication are silently ignored by the replication stream.
+
+== Verify Replica Identity
+
+Each table must have a replica identity that allows PostgreSQL to identify which row was changed.
+The `DEFAULT` mode (which uses the primary key) is recommended.
+
+Query the current replica identity for all tables in the `public` schema:
+
+[source,sql]
+----
+SELECT c.relname       AS table_name,
+       c.relreplident  AS replica_identity
+FROM   pg_class     c
+JOIN   pg_namespace n ON n.oid = c.relnamespace
+WHERE  n.nspname = 'public'
+  AND  c.relkind  = 'r'
+ORDER  BY c.relname;
+----
+
+The `replica_identity` column values are:
+
+[cols="1,4", options="header"]
+|===
+|Value |Meaning
+
+|`d`
+|DEFAULT — uses the primary key. Recommended for all captured tables.
+
+|`f`
+|FULL — includes all column values in change events. Supported but produces larger WAL records.
+
+|`i`
+|INDEX — uses a specific unique index. Supported when a primary key is not available.
+
+|`n`
+|NOTHING — no identity. {project-name} cannot capture changes from these tables.
+|===
+
+[IMPORTANT]
+====
+Tables with a replica identity of `n` (NOTHING), or tables that have no primary key and use the
+`DEFAULT` setting, cannot be captured. To resolve this, either add a primary key:
+
+[source,sql]
+----
+ALTER TABLE my_table ADD COLUMN id BIGSERIAL PRIMARY KEY;
+----
+
+Or switch to `FULL` replica identity:
+
+[source,sql]
+----
+ALTER TABLE my_table REPLICA IDENTITY FULL;
+----
+
+Note that `FULL` increases WAL volume significantly on tables with wide rows or high write throughput.
+====
+
+== Create the Watermark Table
+
+The watermark table is used by the {project-name} snapshot engine to record chunk boundaries.
+It must be created in the same schema as the tables being captured, and the CDC user must have
+write access.
+
+[source,sql]
+----
+CREATE TABLE IF NOT EXISTS qcdcf_watermark (
+    id           BIGSERIAL PRIMARY KEY,
+    window_id    UUID          NOT NULL,
+    boundary     VARCHAR(4)    NOT NULL CHECK (boundary IN ('LOW', 'HIGH')),
+    table_schema VARCHAR(255)  NOT NULL,
+    table_name   VARCHAR(255)  NOT NULL,
+    chunk_index  INTEGER       NOT NULL,
+    created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+GRANT INSERT, SELECT            ON qcdcf_watermark             TO qcdcf;
+GRANT USAGE,  SELECT            ON SEQUENCE qcdcf_watermark_id_seq TO qcdcf;
+----
+
+NOTE: The watermark table must also be included in the publication so that its rows appear in the
+replication stream. If you used `FOR ALL TABLES`, this is handled automatically. If you specified
+individual tables, add `qcdcf_watermark` to your publication:
+
+[source,sql]
+----
+ALTER PUBLICATION qcdcf_pub ADD TABLE qcdcf_watermark;
+----
+
+== Create the Checkpoint Table
+
+The checkpoint table persists the last confirmed Log Sequence Number (LSN) and snapshot progress
+for each connector instance. This enables {project-name} to resume from the correct position
+after a restart.
+
+[source,sql]
+----
+CREATE TABLE IF NOT EXISTS qcdcf_checkpoint (
+    connector_id           VARCHAR(255) PRIMARY KEY,
+    last_lsn               BIGINT       NOT NULL,
+    last_tx_id             BIGINT,
+    snapshot_table         VARCHAR(512),
+    snapshot_chunk_index   INTEGER      NOT NULL DEFAULT -1,
+    updated_at             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+GRANT INSERT, UPDATE, SELECT ON qcdcf_checkpoint TO qcdcf;
+----
+
+== Replication Slot
+
+{project-name} creates a logical replication slot automatically on first start. The slot retains
+WAL segments from the confirmed restart LSN onwards, ensuring no events are lost between restarts.
+
+To inspect existing slots:
+
+[source,sql]
+----
+SELECT slot_name, plugin, slot_type, active, restart_lsn, confirmed_flush_lsn
+FROM   pg_replication_slots;
+----
+
+To create the slot manually (for example, to reserve it before deploying the connector):
+
+[source,sql]
+----
+SELECT pg_create_logical_replication_slot('qcdcf_slot', 'pgoutput');
+----
+
+[WARNING]
+====
+An unused replication slot will cause PostgreSQL to retain WAL indefinitely. If {project-name} is
+stopped for an extended period, monitor disk usage on the PostgreSQL host. Drop the slot if the
+connector will not resume promptly:
+
+[source,sql]
+----
+SELECT pg_drop_replication_slot('qcdcf_slot');
+----
+====
+
+== Verify with the QCDCF Health Check
+
+Once all setup steps are complete, use the built-in prerequisites check to confirm that
+{project-name} can connect and that all required objects are present:
+
+[source,bash]
+----
+curl http://localhost:8080/api/cli/check | jq .
+----
+
+The response reports `OK`, `WARN`, or `FAIL` for each prerequisite item. A fully configured
+environment will show all items as `OK` before you start the connector.
+
+== Docker Compose — Local Development
+
+The following `docker-compose.yml` snippet starts a PostgreSQL 16 container pre-configured for
+logical replication. This is suitable for local development and integration testing.
+
+[source,yaml]
+----
+services:
+  postgres:
+    image: postgres:16-alpine
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=4
+        -c max_wal_senders=4
+    environment:
+      POSTGRES_DB: qcdcf
+      POSTGRES_USER: qcdcf
+      POSTGRES_PASSWORD: qcdcf
+    ports:
+      - "5432:5432"
+----
+
+TIP: The `command` override passes WAL parameters directly to the PostgreSQL process, avoiding the
+need to mount a custom `postgresql.conf`. This is convenient for development but not recommended
+for production use where a full configuration file gives better control.
+
+== Troubleshooting
+
+The table below lists common errors encountered during setup, their likely causes, and the
+recommended fix.
+
+[cols="2,3,3", options="header"]
+|===
+|Error Message |Likely Cause |Resolution
+
+|`FATAL: permission denied to start WAL sender`
+|The CDC role is missing the `REPLICATION` attribute.
+|`ALTER ROLE qcdcf WITH REPLICATION;`
+
+|`publication "qcdcf_pub" does not exist`
+|The publication was not created, or was created under a different name.
+|`CREATE PUBLICATION qcdcf_pub FOR TABLE ...;`
+
+|`wal_level is not logical`
+|`postgresql.conf` has not been updated, or the server has not been restarted.
+|Edit `postgresql.conf`, set `wal_level = logical`, then restart PostgreSQL.
+
+|`table "x" has no primary key`
+|The table uses `DEFAULT` replica identity but has no primary key.
+|Add a primary key or run `ALTER TABLE x REPLICA IDENTITY FULL;`
+
+|`Connection refused`
+|PostgreSQL is not running, or the JDBC URL is incorrect.
+|Verify the host, port, and database name in the connector configuration. Check that PostgreSQL is
+running with `pg_isready -h localhost -p 5432`.
+
+|`replication slot "qcdcf_slot" already exists`
+|A previous connector instance left the slot active, or it was created manually.
+|Drop and recreate: `SELECT pg_drop_replication_slot('qcdcf_slot');`
+|===

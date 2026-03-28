@@ -1,0 +1,215 @@
+= What is Change Data Capture?
+Paul Snow
+:description: A conceptual introduction to Change Data Capture (CDC): the problem it solves, how it works, and why it matters for event-driven architectures.
+include::partial$_attributes.adoc[]
+
+Change Data Capture (CDC) is a technique for detecting and reacting to changes in a database — every INSERT, UPDATE, and DELETE — and making those changes available as a stream of events to other systems.
+
+This page explains what CDC is, why it is needed, how PostgreSQL supports it, and how it compares to alternative approaches.
+
+== The Problem: Reacting to Database Changes
+
+Modern applications rarely live in isolation.
+A customer record updated in one service needs to be reflected in a search index, a notification system, an analytics pipeline, and a cache — all in near real-time.
+
+The fundamental challenge is: _how do you know something changed?_
+
+=== Polling
+
+The simplest approach is polling: periodically query the database for rows that have changed since the last check.
+
+[source,sql]
+----
+SELECT * FROM customer
+WHERE updated_at > :last_checked_at
+ORDER BY updated_at;
+----
+
+This works, but it has serious problems:
+
+* *Latency* — changes are only visible after the next poll interval.
+* *Missed events* — if a row is updated and then deleted between polls, the update is never seen.
+* *Database load* — polling queries run constantly, consuming database resources even when nothing has changed.
+* *Clock drift* — relying on `updated_at` timestamps requires application code to maintain them reliably, which is easily forgotten.
+
+=== Database Triggers
+
+Another approach is to write a database trigger that fires on every change and writes a record to an events table or calls an external service.
+
+Triggers work, but they create tight coupling between the database schema and the downstream integration logic.
+They are fragile under schema changes, they add latency to every write, and they are difficult to test in isolation.
+
+=== Application-Level Events
+
+A third approach is to have the application emit an event whenever it writes to the database.
+This is sometimes called a _dual write_: write to the database, then publish to a message broker.
+
+The problem with dual writes is consistency.
+If the database write succeeds but the broker publish fails, the two systems diverge.
+If the broker publish succeeds but the database write fails, phantom events are emitted.
+Handling this correctly requires distributed transactions, which are expensive and complex.
+
+NOTE: The phrase "dual write problem" describes the impossibility of atomically writing to two independent systems without coordination overhead. CDC solves this by making the database itself the single source of truth, reading changes from one place only.
+
+== The Solution: Reading the Transaction Log
+
+Every write to a PostgreSQL database is first written to the *Write-Ahead Log (WAL)*.
+The WAL is an append-only, ordered sequence of all committed changes — the database's own durable record of what happened and when.
+
+CDC works by reading the WAL directly, rather than querying application tables or relying on triggers.
+This means:
+
+* Every committed change is captured — nothing is missed.
+* The database's own serialisation order is preserved.
+* No application code changes are required.
+* No database triggers are needed.
+* No dual write problem exists: the WAL is written as part of the commit, not as a separate step.
+
+== How PostgreSQL Supports CDC
+
+PostgreSQL provides a feature called *logical replication* specifically for reading the WAL as a stream of change events.
+Understanding the key components makes it easier to reason about how QCDCF works.
+
+Write-Ahead Log (WAL)::
+The WAL is the foundation of PostgreSQL's durability guarantee.
+Before any change is applied to the data files, it is written to the WAL.
+On crash, PostgreSQL replays the WAL to recover to a consistent state.
+The WAL records every INSERT, UPDATE, DELETE, and schema change in commit order.
+
+Logical Decoding::
+Raw WAL records are internal binary structures tied to the physical storage layout.
+*Logical decoding* translates those raw records into a logical representation — the actual row values before and after each change — that is independent of the physical storage format.
+This is the layer that makes it practical to build CDC on top of PostgreSQL.
+
+Output Plugins::
+Logical decoding uses an output plugin to format the decoded changes.
+QCDCF uses `pgoutput`, the built-in output plugin that has been part of PostgreSQL since version 10.
+`pgoutput` requires no additional server-side extensions.
+
+Publications::
+A *publication* is a named set of tables whose changes should be included in the replication stream.
+Publications control which tables are tracked.
+A table must be included in a publication to have its changes captured.
++
+[source,sql]
+----
+CREATE PUBLICATION app_cdc_pub FOR TABLE public.customer, public.account;
+----
+
+Logical Replication Slots::
+A *replication slot* is a named, durable cursor into the WAL stream.
+PostgreSQL retains WAL segments that have not yet been consumed by the slot, so a slow or temporarily disconnected consumer does not lose events.
+Each QCDCF connector uses one logical replication slot.
++
+[source,sql]
+----
+SELECT pg_create_logical_replication_slot('qcdcf_slot', 'pgoutput');
+----
+
+Replica Identity::
+For UPDATE and DELETE operations, PostgreSQL needs to know which columns identify the row being changed.
+This is called the *replica identity*.
+By default, the primary key columns are used.
+Tables without a suitable primary key cannot be tracked by CDC unless configured explicitly.
+
+IMPORTANT: All tables tracked by QCDCF must have a stable primary key.
+Tables without a primary key are rejected during connector initialisation.
+
+== What CDC Enables
+
+With a reliable stream of change events, a wide range of integration patterns become straightforward:
+
+Real-time synchronisation::
+Keep a search index, read model, or replica in sync with the source of truth, with sub-second latency and no polling.
+
+Event-driven architectures::
+Publish change events to a message broker such as Kafka so that other services can react to changes without being coupled to the source service.
+
+CQRS and Event Sourcing::
+Build read-side projections and event-sourced aggregates by consuming the change stream rather than polling the database.
+
+Zero-downtime migrations::
+Capture both existing data (via snapshots) and ongoing changes (via the WAL stream) simultaneously, enabling cut-overs without service interruption.
+
+Audit trails::
+Record every change to sensitive data with a timestamp, the before and after values, and the transaction that caused it — directly from the WAL, with no reliance on application code.
+
+See xref:use-cases.adoc[Use Cases] for concrete examples of these patterns.
+
+== CDC vs Other Approaches
+
+[cols="1,1,1,1,1", options="header"]
+|===
+|Criterion
+|CDC (WAL)
+|Polling
+|Triggers
+|Dual Writes
+
+|Captures deletes
+|Yes
+|Only with soft-delete pattern
+|Yes
+|Only if explicitly emitted
+
+|Misses updates between polls
+|Never
+|Yes, if no timestamp column
+|Never
+|Never
+
+|Requires application changes
+|No
+|No (but needs timestamp column)
+|No
+|Yes
+
+|Latency
+|Sub-second
+|Configurable, min ~1s typical
+|Sub-second
+|Sub-second
+
+|Database overhead
+|Low (WAL is written anyway)
+|Medium (queries run constantly)
+|Medium (trigger on every write)
+|Low
+
+|Consistency risk
+|None (single source of truth)
+|Low (but clock drift possible)
+|Low (but trigger failures)
+|High (dual write problem)
+
+|Coupling to schema
+|Low
+|Medium (timestamp column)
+|High (trigger bound to schema)
+|High (app must emit events)
+
+|Works without app changes
+|Yes
+|Mostly
+|Yes
+|No
+|===
+
+CDC wins on correctness and operational simplicity.
+The WAL is already being written; CDC reads it.
+No additional work is imposed on the database or application for each write.
+
+TIP: CDC is particularly powerful for legacy applications where modifying application code to emit events is impractical.
+The database change stream can be captured without touching a single line of application code.
+
+== Summary
+
+Change Data Capture reads the database transaction log to produce a reliable, ordered, low-latency stream of every committed change.
+For PostgreSQL, this is built on logical replication, publications, replication slots, and the `pgoutput` output plugin.
+
+CDC eliminates the polling overhead, the dual write problem, and the missed-event risk of alternative approaches.
+It is the foundation on which QCDCF is built.
+
+* xref:how-qcdcf-works.adoc[How QCDCF Works] — the watermark algorithm and pipeline explained
+* xref:use-cases.adoc[Use Cases] — concrete examples of what you can build
+* xref:getting-started.adoc[Getting Started] — prerequisites and first steps

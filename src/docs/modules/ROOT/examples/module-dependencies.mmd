@@ -1,0 +1,15 @@
+graph TD
+    API[cdc-api-model]
+    CORE[cdc-core]
+    PG[cdc-postgres]
+    RT[cdc-runtime-quarkus]
+    TK[cdc-test-kit]
+
+    CORE --> API
+    PG --> CORE
+    PG --> API
+    RT --> PG
+    RT --> CORE
+    RT --> API
+    TK --> CORE
+    TK --> API

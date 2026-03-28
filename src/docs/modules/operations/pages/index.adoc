@@ -1,0 +1,87 @@
+= Operations Guide
+Paul Snow
+:description: Operations guide for running and managing QCDCF in production.
+include::ROOT:partial$_attributes.adoc[]
+
+This section covers everything required to deploy and operate {project-name} in a
+production or staging environment: preparing the database, deploying the runtime, and
+keeping the connector healthy over time.
+
+== In This Section
+
+* xref:postgresql-setup.adoc[PostgreSQL Setup] — enable logical replication, create the
+  CDC role, define publications, and provision the framework's internal tables.
+* xref:deployment.adoc[Deployment] — run {project-name} as a JVM application or container,
+  configure it via environment variables, and verify health.
+
+== REST API Quick Reference
+
+The following endpoints are available once the runtime is running. See
+xref:deployment.adoc#rest-api[Deployment — REST API] for full details.
+
+[cols="1,2,4", options="header"]
+|===
+|Method |Path |Purpose
+
+|GET
+|`/api/connector/status`
+|Current connector status (connector ID and state).
+
+|GET
+|`/api/connector/progress`
+|Snapshot progress and general connector metrics.
+
+|POST
+|`/api/connector/pause`
+|Pause the connector, stopping the WAL reader.
+
+|POST
+|`/api/connector/resume`
+|Resume the connector after a pause.
+
+|POST
+|`/api/connector/snapshot`
+|Trigger a full table snapshot. Body: `{"tableName": "public.customer"}`.
+
+|GET
+|`/api/cli/check`
+|Validate all PostgreSQL prerequisites (WAL level, publication, slot, etc.).
+
+|GET
+|`/api/cli/tables`
+|List all tables in the configured publication with metadata.
+
+|GET
+|`/api/cli/about`
+|Version and build information.
+
+|GET
+|`/api/cli/version`
+|Current {project-name} version string.
+|===
+
+== Monitoring and Health Checks
+
+{project-name} exposes SmallRye Health endpoints compatible with Kubernetes probes and
+Prometheus scraping:
+
+[cols="2,4", options="header"]
+|===
+|Endpoint |Purpose
+
+|`/q/health`
+|Combined liveness and readiness result.
+
+|`/q/health/live`
+|Liveness probe — confirms the JVM is running.
+
+|`/q/health/ready`
+|Readiness probe — confirms the connector can reach PostgreSQL.
+
+|`/q/metrics`
+|Prometheus-format metrics. All {project-name} metrics use the `qcdcf_` prefix.
+|===
+
+NOTE: Before starting the connector for the first time, run
+`curl http://localhost:8080/api/cli/check | jq .` to validate that all prerequisites
+are satisfied. The response reports `OK`, `WARN`, or `FAIL` for each check item.

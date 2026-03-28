@@ -1,0 +1,48 @@
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <!-- WAL Lag -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">WAL Lag</p>
+        {#if slotHealth != null}
+        <p class="text-3xl font-bold font-mono {lagColour}">{slotHealth.walLagFormatted}</p>
+        <div class="mt-2">{walLagSparkline.raw}</div>
+        {#else}
+        <p class="text-2xl font-bold font-mono text-gray-500">Unavailable</p>
+        {/if}
+    </div>
+    <!-- Slot Status -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Slot Status</p>
+        {#if slotHealth != null}
+        <div class="flex items-centre justify-centre gap-2 mt-2">
+            {#if slotHealth.active}
+            <span class="inline-block w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span class="text-2xl font-bold text-emerald-400">Active</span>
+            {#else}
+            <span class="inline-block w-3 h-3 rounded-full bg-red-400"></span>
+            <span class="text-2xl font-bold text-red-400">Inactive</span>
+            {/if}
+        </div>
+        <p class="text-xs text-gray-500 mt-2 font-mono">{slotHealth.slotName}</p>
+        {#else}
+        <p class="text-2xl font-bold font-mono text-gray-500">Unavailable</p>
+        {/if}
+    </div>
+    <!-- Current WAL LSN -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Current WAL LSN</p>
+        {#if replicationStats != null}
+        <p class="text-2xl font-bold font-mono text-indigo-400">{replicationStats.currentWalLsnHex}</p>
+        {#else}
+        <p class="text-2xl font-bold font-mono text-gray-500">Unavailable</p>
+        {/if}
+    </div>
+    <!-- WAL Senders -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 text-centre">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">WAL Senders</p>
+        {#if replicationStats != null}
+        <p class="text-3xl font-bold font-mono text-indigo-400">{replicationStats.activeWalSenders} <span class="text-lg text-gray-500">/ {replicationStats.maxWalSenders}</span></p>
+        {#else}
+        <p class="text-2xl font-bold font-mono text-gray-500">Unavailable</p>
+        {/if}
+    </div>
+</div>

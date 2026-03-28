@@ -1,0 +1,278 @@
+= Configuration Reference
+Paul Snow
+:description: Complete configuration reference for QCDCF connectors and runtime, covering all qcdcf.* properties, datasource settings, and environment variable overrides.
+include::partial$_attributes.adoc[]
+
+This page documents every configuration property accepted by the {project-name} runtime.
+Properties are supplied via `application.properties`, environment variables, or a `.env` file in dev mode.
+
+== Property Naming Conventions
+
+Quarkus maps dotted property names to environment variables by converting dots and hyphens to underscores and uppercasing.
+The mapping is deterministic:
+
+[source,properties]
+----
+qcdcf.connector.id          → QCDCF_CONNECTOR_ID
+qcdcf.connector.auto-start  → QCDCF_CONNECTOR_AUTO_START
+qcdcf.source.slot-name      → QCDCF_SOURCE_SLOT_NAME
+qcdcf.source.publication-name → QCDCF_SOURCE_PUBLICATION_NAME
+qcdcf.source.chunk-size     → QCDCF_SOURCE_CHUNK_SIZE
+qcdcf.sink.type             → QCDCF_SINK_TYPE
+qcdcf.sink.kafka.bootstrap-servers → QCDCF_SINK_KAFKA_BOOTSTRAP_SERVERS
+qcdcf.sink.kafka.topic-prefix      → QCDCF_SINK_KAFKA_TOPIC_PREFIX
+----
+
+TIP: In container deployments, environment variable overrides are the preferred mechanism.
+In local development, a `.env` file placed at the project root is automatically loaded by Quarkus dev mode.
+
+== Connector Properties
+
+These properties control the identity and lifecycle of the connector instance.
+
+[cols="2,1,3",options="header"]
+|===
+| Property | Default | Description
+
+| `qcdcf.connector.id`
+| `default-connector`
+| Unique identifier for this connector instance.
+Used to scope metadata, checkpoints, watermark windows, and metrics.
+Must be stable across restarts.
+If multiple connectors run in a single runtime, each must have a distinct ID.
+
+| `qcdcf.connector.auto-start`
+| `true`
+| When `true`, the WAL reader starts automatically on application startup.
+Set to `false` to start the connector manually via the REST admin API.
+|===
+
+== Source Properties
+
+These properties configure how the connector connects to the PostgreSQL source database and reads change data.
+
+[cols="2,1,3",options="header"]
+|===
+| Property | Default | Description
+
+| `qcdcf.source.slot-name`
+| `qcdcf_slot`
+| Name of the PostgreSQL logical replication slot.
+The slot must already exist on the source database before the connector starts, or the connector will create it if the PostgreSQL user has `REPLICATION` privilege.
+Use a distinct slot name per connector to avoid slot conflict.
+
+| `qcdcf.source.publication-name`
+| `qcdcf_pub`
+| Name of the PostgreSQL publication that defines which tables are tracked.
+The publication must be created on the source database before the connector starts.
+See xref:operations:postgresql-setup.adoc[PostgreSQL Setup] for the DDL required.
+
+| `qcdcf.source.chunk-size`
+| `1000`
+| Number of rows to read per snapshot chunk.
+Larger values reduce the total number of watermark windows opened during a full table snapshot, at the cost of larger in-memory buffers during reconciliation.
+Values between 500 and 5000 are typical.
+|===
+
+== Sink Properties
+
+These properties control where change events are delivered after the reconciliation pipeline.
+
+[cols="2,1,3",options="header"]
+|===
+| Property | Default | Description
+
+| `qcdcf.sink.type`
+| `logging`
+| The sink implementation to use.
+Supported values in the current release:
+
+`logging` — writes structured event summaries to the application log.
+Useful for development and debugging.
+
+`memory` — retains events in an in-memory list.
+Useful for integration tests.
+
+`kafka` — publishes events to Apache Kafka topics.
+Requires `qcdcf.sink.kafka.*` properties to be set.
+
+| `qcdcf.sink.kafka.bootstrap-servers`
+| `localhost:9092`
+| Comma-separated list of Kafka broker addresses.
+Active only when `qcdcf.sink.type=kafka`.
+
+| `qcdcf.sink.kafka.topic-prefix`
+| `qcdcf`
+| Prefix applied to all Kafka topic names.
+Topics are named `\{prefix}.\{schema}.\{table}`.
+For example, with the default prefix and a table `public.customer`, events are published to the topic `qcdcf.public.customer`.
+Active only when `qcdcf.sink.type=kafka`.
+|===
+
+NOTE: Kafka sink support is planned for a post-MVP release.
+Setting `qcdcf.sink.type=kafka` in the current release will fail at startup with an unsupported sink type error.
+
+== Datasource Properties
+
+QCDCF uses the standard Quarkus datasource configuration to connect to PostgreSQL for metadata persistence.
+This is a separate database connection from the logical replication stream, which uses the PostgreSQL JDBC replication API.
+
+[cols="2,1,3",options="header"]
+|===
+| Property | Default | Description
+
+| `quarkus.datasource.db-kind`
+| `postgresql`
+| The type of database.
+Must be `postgresql` for QCDCF.
+
+| `quarkus.datasource.jdbc.url`
+| `jdbc:postgresql://localhost:5432/qcdcf`
+| JDBC connection URL for the metadata store.
+In the MVP, this is the same database as the CDC source.
+In production, these may be separate instances.
+
+| `quarkus.datasource.username`
+| `qcdcf`
+| Database username for the JDBC metadata connection.
+
+| `quarkus.datasource.password`
+| `qcdcf`
+| Database password for the JDBC metadata connection.
+In production deployments, inject this via the `QUARKUS_DATASOURCE_PASSWORD` environment variable rather than storing it in `application.properties`.
+|===
+
+WARNING: Never commit database passwords to source control.
+Use environment variables or a secrets manager for production credentials.
+
+== Health Properties
+
+QCDCF exposes health endpoints via the SmallRye Health extension.
+These endpoints are used by container orchestration platforms to determine readiness and liveness.
+
+[cols="2,1,3",options="header"]
+|===
+| Property | Default | Description
+
+| `quarkus.smallrye-health.extensions.enabled`
+| `true`
+| Enables the SmallRye Health extension.
+When enabled, the following endpoints are available:
+
+`/q/health/live` — liveness: the JVM process is running.
+
+`/q/health/ready` — readiness: metadata store reachable, source database reachable, replication slot accessible, connector ownership valid.
+|===
+
+== Environment Variable Reference
+
+The following table lists all {project-name} properties and their environment variable equivalents.
+
+[cols="2,2,1",options="header"]
+|===
+| Property | Environment Variable | Default
+
+| `qcdcf.connector.id`
+| `QCDCF_CONNECTOR_ID`
+| `default-connector`
+
+| `qcdcf.connector.auto-start`
+| `QCDCF_CONNECTOR_AUTO_START`
+| `true`
+
+| `qcdcf.source.slot-name`
+| `QCDCF_SOURCE_SLOT_NAME`
+| `qcdcf_slot`
+
+| `qcdcf.source.publication-name`
+| `QCDCF_SOURCE_PUBLICATION_NAME`
+| `qcdcf_pub`
+
+| `qcdcf.source.chunk-size`
+| `QCDCF_SOURCE_CHUNK_SIZE`
+| `1000`
+
+| `qcdcf.sink.type`
+| `QCDCF_SINK_TYPE`
+| `logging`
+
+| `qcdcf.sink.kafka.bootstrap-servers`
+| `QCDCF_SINK_KAFKA_BOOTSTRAP_SERVERS`
+| `localhost:9092`
+
+| `qcdcf.sink.kafka.topic-prefix`
+| `QCDCF_SINK_KAFKA_TOPIC_PREFIX`
+| `qcdcf`
+
+| `quarkus.datasource.jdbc.url`
+| `QUARKUS_DATASOURCE_JDBC_URL`
+| `jdbc:postgresql://localhost:5432/qcdcf`
+
+| `quarkus.datasource.username`
+| `QUARKUS_DATASOURCE_USERNAME`
+| `qcdcf`
+
+| `quarkus.datasource.password`
+| `QUARKUS_DATASOURCE_PASSWORD`
+| `qcdcf`
+|===
+
+== Example Configurations
+
+=== Development Mode
+
+The following configuration is suitable for local development using `gradle21w quarkusDev`.
+Create a `.env` file in the project root:
+
+[source,properties]
+----
+QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://localhost:5432/qcdcf_dev
+QUARKUS_DATASOURCE_USERNAME=qcdcf
+QUARKUS_DATASOURCE_PASSWORD=qcdcf
+
+QCDCF_CONNECTOR_ID=dev-connector
+QCDCF_CONNECTOR_AUTO_START=false
+
+QCDCF_SOURCE_SLOT_NAME=qcdcf_dev_slot
+QCDCF_SOURCE_PUBLICATION_NAME=qcdcf_dev_pub
+QCDCF_SOURCE_CHUNK_SIZE=500
+
+QCDCF_SINK_TYPE=logging
+----
+
+TIP: Setting `qcdcf.connector.auto-start=false` in development means you can start the WAL reader manually via the admin API once you are ready, rather than having it start on every hot-reload.
+
+=== Production Mode
+
+The following `application.properties` is a baseline for a production deployment.
+Sensitive values are left as environment variable references and must be injected by the deployment platform.
+
+[source,properties]
+----
+# Connector
+qcdcf.connector.id=prod-connector
+qcdcf.connector.auto-start=true
+
+# Source
+qcdcf.source.slot-name=qcdcf_prod_slot
+qcdcf.source.publication-name=qcdcf_prod_pub
+qcdcf.source.chunk-size=2000
+
+# Sink
+qcdcf.sink.type=logging
+
+# Datasource — credentials injected via environment
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.jdbc.url=${QUARKUS_DATASOURCE_JDBC_URL}
+quarkus.datasource.username=${QUARKUS_DATASOURCE_USERNAME}
+quarkus.datasource.password=${QUARKUS_DATASOURCE_PASSWORD}
+
+# Health
+quarkus.smallrye-health.extensions.enabled=true
+----
+
+== See Also
+
+* xref:architecture.adoc[Architecture] — how the connector pipeline uses these settings
+* xref:operations:postgresql-setup.adoc[PostgreSQL Setup] — creating the publication and replication slot
+* xref:reference:api-model.adoc[API Model Reference] — the event types produced by the pipeline

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QCDCF — Snapshots &amp; Watermarks</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+        <div class="flex items-center justify-between max-w-7xl mx-auto">
+            <h1 class="text-xl font-bold text-indigo-400">Snapshots &amp; Watermarks</h1>
+            <div class="flex items-center gap-4">
+                <a href="/dashboard" class="text-sm text-gray-400 hover:text-indigo-400">&larr; Dashboard</a>
+                <a href="/dashboard/replication" class="text-sm text-gray-400 hover:text-indigo-400">Replication Health &rarr;</a>
+                <a href="/dashboard/history" class="text-sm text-gray-400 hover:text-indigo-400">Metrics History &rarr;</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-6 py-8 space-y-6">
+
+        <!-- Top Section: Active Snapshot Status -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+             hx-get="/dashboard/fragments/snapshot-active"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML">
+            {#include fragments/snapshotActive /}
+        </div>
+
+        <!-- Second Section: Watermark Windows -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+             hx-get="/dashboard/fragments/watermark-windows"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML">
+            {#include fragments/watermarkWindows /}
+        </div>
+
+        <!-- Third Section: Watermark Events in WAL -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+             hx-get="/dashboard/fragments/watermark-wal"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML">
+            {#include fragments/watermarkWalEvents /}
+        </div>
+
+        <!-- Bottom Section: Snapshot History -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+             hx-get="/dashboard/fragments/snapshot-history"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
+            {#include fragments/snapshotHistory /}
+        </div>
+
+    </main>
+</body>
+</html>

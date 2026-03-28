@@ -1,0 +1,49 @@
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <!-- Replication Configuration -->
+    <div>
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Replication Configuration</h2>
+        {#if replicationStats != null}
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <tbody class="divide-y divide-gray-700">
+                    <tr>
+                        <td class="py-2 pr-4 text-gray-400 font-medium w-48">wal_level</td>
+                        <td class="py-2 font-mono {#if replicationStats.walLevel == 'logical'}text-emerald-400{#else}text-yellow-400{/if}">{replicationStats.walLevel}</td>
+                    </tr>
+                    <tr>
+                        <td class="py-2 pr-4 text-gray-400 font-medium">max_replication_slots</td>
+                        <td class="py-2 font-mono text-gray-100">{replicationStats.maxReplicationSlots} <span class="text-gray-500">(used: {replicationStats.usedReplicationSlots})</span></td>
+                    </tr>
+                    <tr>
+                        <td class="py-2 pr-4 text-gray-400 font-medium">max_wal_senders</td>
+                        <td class="py-2 font-mono text-gray-100">{replicationStats.maxWalSenders} <span class="text-gray-500">(active: {replicationStats.activeWalSenders})</span></td>
+                    </tr>
+                    <tr>
+                        <td class="py-2 pr-4 text-gray-400 font-medium">wal_segment_size</td>
+                        <td class="py-2 font-mono text-gray-100">{replicationStats.walSegmentSize}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {#else}
+        <p class="text-gray-500 italic">Database unavailable.</p>
+        {/if}
+    </div>
+
+    <!-- WAL Lag History -->
+    <div>
+        <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">WAL Lag History (last 5 minutes)</h2>
+        <div class="mb-4">{walLagLargeSparkline.raw}</div>
+        {#if highLag}
+        <div class="bg-red-900/30 border border-red-700 rounded-lg p-4 mt-4">
+            <div class="flex items-start gap-3">
+                <span class="text-red-400 text-lg">&#9888;</span>
+                <div>
+                    <p class="text-sm font-medium text-red-400">WARNING: High WAL lag detected</p>
+                    <p class="text-xs text-red-300/70 mt-1">The replication slot is falling behind. Check the connector status and sink throughput.</p>
+                </div>
+            </div>
+        </div>
+        {/if}
+    </div>
+</div>

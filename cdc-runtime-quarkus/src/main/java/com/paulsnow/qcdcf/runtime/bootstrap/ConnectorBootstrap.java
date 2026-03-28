@@ -9,7 +9,7 @@ import com.paulsnow.qcdcf.postgres.replication.PgOutputMessageDecoder;
 import com.paulsnow.qcdcf.postgres.replication.PostgresLogStreamReader;
 import com.paulsnow.qcdcf.postgres.replication.PostgresLogicalReplicationClient;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
-import com.paulsnow.qcdcf.runtime.messaging.WalIngressChannelBridge;
+import com.paulsnow.qcdcf.runtime.service.MetricsService;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -24,8 +24,8 @@ import java.util.List;
  * Bootstraps the CDC connector on application startup.
  * <p>
  * Creates the WAL capture pipeline components (replication client, decoder, normaliser)
- * and wires them through the {@link WalIngressChannelBridge} into the reactive messaging
- * channels. The blocking replication reader runs on a dedicated daemon thread.
+ * and wires them through a metrics-aware {@link EventSink} decorator. The blocking
+ * replication reader runs on a dedicated daemon thread.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -38,7 +38,10 @@ public class ConnectorBootstrap {
     private final ConnectorRuntimeConfig config;
 
     @Inject
-    WalIngressChannelBridge bridge;
+    EventSink eventSink;
+
+    @Inject
+    MetricsService metricsService;
 
     @ConfigProperty(name = "quarkus.datasource.jdbc.url")
     String jdbcUrl;
@@ -86,21 +89,31 @@ public class ConnectorBootstrap {
         PgOutputMessageDecoder decoder = new PgOutputMessageDecoder();
         PgOutputEventNormaliser normaliser = new PgOutputEventNormaliser(config.connector().id());
 
-        EventSink bridgeSink = new EventSink() {
+        EventSink metricsSink = new EventSink() {
             @Override
             public PublishResult publish(ChangeEnvelope event) {
-                bridge.emit(event);
-                return new PublishResult.Success(1);
+                PublishResult result = eventSink.publish(event);
+                if (result.isSuccess()) {
+                    metricsService.recordEvent(event);
+                } else {
+                    var failure = (PublishResult.Failure) result;
+                    metricsService.recordError(String.format("Sink publication failed for %s: %s",
+                            event.tableId(), failure.reason()));
+                }
+                return result;
             }
 
             @Override
             public PublishResult publishBatch(List<ChangeEnvelope> events) {
-                events.forEach(bridge::emit);
-                return new PublishResult.Success(events.size());
+                PublishResult result = eventSink.publishBatch(events);
+                if (result.isSuccess()) {
+                    events.forEach(metricsService::recordEvent);
+                }
+                return result;
             }
         };
 
-        reader = new PostgresLogStreamReader(client, decoder, normaliser, bridgeSink);
+        reader = new PostgresLogStreamReader(client, decoder, normaliser, metricsSink);
 
         readerThread = new Thread(() -> {
             try {

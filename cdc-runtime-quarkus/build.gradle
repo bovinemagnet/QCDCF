@@ -13,8 +13,7 @@ dependencies {
     implementation 'io.quarkus:quarkus-jdbc-postgresql'
     implementation 'io.quarkus:quarkus-smallrye-health'
     implementation 'io.quarkus:quarkus-arc'
-    implementation 'io.quarkus:quarkus-messaging'
-    implementation 'io.quarkus:quarkus-messaging-kafka'
+    implementation 'org.apache.kafka:kafka-clients:3.9.0'
     implementation 'io.quarkus:quarkus-rest-qute'
     implementation 'io.quarkus:quarkus-scheduler'
 

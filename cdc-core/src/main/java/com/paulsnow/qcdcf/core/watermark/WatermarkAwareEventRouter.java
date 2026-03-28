@@ -34,6 +34,7 @@ public class WatermarkAwareEventRouter {
 
     private final ReconciliationEngine reconciliationEngine;
     private final EventSink sink;
+    private final int maxBufferSize;
 
     // Active window state
     private WatermarkWindow activeWindow;
@@ -41,8 +42,13 @@ public class WatermarkAwareEventRouter {
     private List<ChangeEnvelope> snapshotChunkEvents = List.of();
 
     public WatermarkAwareEventRouter(ReconciliationEngine reconciliationEngine, EventSink sink) {
+        this(reconciliationEngine, sink, 100_000);
+    }
+
+    public WatermarkAwareEventRouter(ReconciliationEngine reconciliationEngine, EventSink sink, int maxBufferSize) {
         this.reconciliationEngine = reconciliationEngine;
         this.sink = sink;
+        this.maxBufferSize = maxBufferSize;
     }
 
     /**
@@ -62,6 +68,12 @@ public class WatermarkAwareEventRouter {
 
         // Window is open — buffer LOG events for reconciliation
         if (event.captureMode() == CaptureMode.LOG) {
+            if (bufferedLogEvents.size() >= maxBufferSize) {
+                LOG.error("Watermark buffer overflow ({} events) — cancelling window for table {}",
+                        maxBufferSize, activeWindow.tableId());
+                cancelWindow(activeWindow);
+                throw new IllegalStateException("Watermark buffer overflow: " + maxBufferSize + " events");
+            }
             bufferedLogEvents.add(event);
             LOG.debug("Buffered LOG event for key {} in window {}",
                     event.key().toCanonical(), activeWindow.windowId());

@@ -1,4 +1,6 @@
 * xref:index.adoc[Overview]
+* xref:what-is-cdc.adoc[What is Change Data Capture?]
+* xref:how-qcdcf-works.adoc[How QCDCF Works]
 * xref:getting-started.adoc[Getting Started]
 * xref:architecture.adoc[Architecture]
 * xref:modules-overview.adoc[Modules]

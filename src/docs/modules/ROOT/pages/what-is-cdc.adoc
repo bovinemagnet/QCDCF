@@ -134,8 +134,6 @@ Capture both existing data (via snapshots) and ongoing changes (via the WAL stre
 Audit trails::
 Record every change to sensitive data with a timestamp, the before and after values, and the transaction that caused it — directly from the WAL, with no reliance on application code.
 
-See xref:use-cases.adoc[Use Cases] for concrete examples of these patterns.
-
 == CDC vs Other Approaches
 
 [cols="1,1,1,1,1", options="header"]
@@ -211,5 +209,4 @@ CDC eliminates the polling overhead, the dual write problem, and the missed-even
 It is the foundation on which QCDCF is built.
 
 * xref:how-qcdcf-works.adoc[How QCDCF Works] — the watermark algorithm and pipeline explained
-* xref:use-cases.adoc[Use Cases] — concrete examples of what you can build
 * xref:getting-started.adoc[Getting Started] — prerequisites and first steps

@@ -194,12 +194,12 @@ Runs on a dedicated single-threaded executor per connector to preserve ordering.
 This is the only component that communicates directly with the PostgreSQL replication API.
 
 pgoutput Decoder (`PgOutputMessageDecoder`)::
-Decodes raw binary `pgoutput` frames into typed `PostgresReplicationMessage` objects.
+Decodes raw binary `pgoutput` frames into typed `DecodedReplicationMessage` objects.
 Extracts the LSN, transaction ID, commit timestamp, table name, operation type, and before/after column values.
 Handles `BEGIN`, `COMMIT`, `RELATION`, `INSERT`, `UPDATE`, and `DELETE` message types.
 
 Event Normaliser (`PgOutputEventNormaliser`)::
-Converts `PostgresReplicationMessage` into the canonical `ChangeEnvelope` domain record.
+Converts `DecodedReplicationMessage` into the canonical `ChangeEnvelope` domain record.
 Watermark row updates are recognised here by their UUID values and tagged as `OperationType.WATERMARK`.
 All other events are tagged as `INSERT`, `UPDATE`, or `DELETE` with `CaptureMode.LOG`.
 
@@ -222,7 +222,7 @@ This is the mechanism that enforces at-least-once delivery.
 Event Sink (`EventSink`)::
 Receives `ChangeEnvelope` batches and performs the actual publication.
 The MVP ships with `LoggingEventSink` and `InMemoryEventSink`.
-Kafka is added later as a sink adapter without modifying any upstream stage.
+`KafkaEventSink` is also available as a sink adapter, without modifying any upstream stage.
 
 == At-Least-Once Delivery
 
@@ -276,7 +276,7 @@ Swapping from `LoggingEventSink` to `KafkaEventSink` requires no changes to any 
 Operational visibility::
 QCDCF exposes metrics, health endpoints, and structured logging for every component of the pipeline.
 The watermark window depth, reconciliation collision count, snapshot progress, and WAL lag are all observable in real time.
-See xref:architecture.adoc#observability[Observability] for the full metrics list.
+See xref:architecture.adoc#_observability[Observability] for the full metrics list.
 
 Correct by design::
 The watermark reconciliation is the product.
@@ -286,6 +286,5 @@ The test kit (`cdc-test-kit`) exists specifically to exercise the edge cases whe
 == See Also
 
 * xref:what-is-cdc.adoc[What is Change Data Capture?] — the problem and the PostgreSQL primitives
-* xref:use-cases.adoc[Use Cases] — concrete examples of what you can build
 * xref:architecture.adoc[Architecture] — detailed component and sequence diagrams
 * xref:modules-overview.adoc[Module Structure] — module responsibilities and dependency graph

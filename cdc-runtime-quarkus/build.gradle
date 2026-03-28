@@ -16,6 +16,7 @@ dependencies {
     implementation 'org.apache.kafka:kafka-clients:3.9.0'
     implementation 'io.quarkus:quarkus-rest-qute'
     implementation 'io.quarkus:quarkus-scheduler'
+    implementation 'io.quarkus:quarkus-smallrye-context-propagation'
 
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation project(':cdc-test-kit')

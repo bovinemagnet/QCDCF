@@ -15,6 +15,7 @@ import com.paulsnow.qcdcf.runtime.bootstrap.ConnectorBootstrap;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 import javax.sql.DataSource;
@@ -54,6 +55,9 @@ public class ConnectorService {
 
     @Inject
     DataSource dataSource;
+
+    @Inject
+    ManagedExecutor executor;
 
     private final Instant startTime = Instant.now();
     private final AtomicReference<SnapshotState> snapshotState =
@@ -113,9 +117,7 @@ public class ConnectorService {
         TableId tableId = new TableId(schema, table);
 
         // Run snapshot on background thread to avoid blocking the REST call
-        Thread snapshotThread = new Thread(() -> executeSnapshot(tableId), "qcdcf-snapshot-" + tableName);
-        snapshotThread.setDaemon(true);
-        snapshotThread.start();
+        executor.submit(() -> executeSnapshot(tableId));
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("connectorId", bootstrap.connectorId());

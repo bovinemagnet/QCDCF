@@ -19,6 +19,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 /**
  * Bootstraps the CDC connector on application startup.
@@ -52,9 +55,11 @@ public class ConnectorBootstrap {
     @ConfigProperty(name = "quarkus.datasource.password")
     String password;
 
+    @Inject
+    ManagedExecutor executor;
+
     private volatile ConnectorStatus status = ConnectorStatus.STOPPED;
     private PostgresLogStreamReader reader;
-    private Thread readerThread;
 
     public ConnectorBootstrap(ConnectorRuntimeConfig config) {
         this.config = config;
@@ -115,8 +120,10 @@ public class ConnectorBootstrap {
 
         reader = new PostgresLogStreamReader(client, decoder, normaliser, metricsSink);
 
-        readerThread = new Thread(() -> {
+        executor.submit(() -> {
             try {
+                status = ConnectorStatus.RUNNING;
+                LOG.infof("QCDCF connector '%s' is running", config.connector().id());
                 reader.start(0);
             } catch (Exception e) {
                 String hint = diagnoseFailure(e);
@@ -125,12 +132,7 @@ public class ConnectorBootstrap {
                 lastError = e.getMessage() + hint;
                 status = ConnectorStatus.FAILED;
             }
-        }, "qcdcf-wal-reader-" + config.connector().id());
-        readerThread.setDaemon(true);
-        readerThread.start();
-
-        status = ConnectorStatus.RUNNING;
-        LOG.infof("QCDCF connector '%s' is running", config.connector().id());
+        });
     }
 
     private String lastError;
@@ -169,8 +171,13 @@ public class ConnectorBootstrap {
         if (reader != null) {
             reader.stop();
         }
-        if (readerThread != null) {
-            readerThread.interrupt();
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                LOG.warnf("Executor did not terminate within 10 seconds for connector '%s'", config.connector().id());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
         status = ConnectorStatus.STOPPED;
         LOG.infof("QCDCF connector '%s' stopped", config.connector().id());
@@ -192,9 +199,6 @@ public class ConnectorBootstrap {
         LOG.infof("Stop requested for connector '%s'", config.connector().id());
         if (reader != null) {
             reader.stop();
-        }
-        if (readerThread != null) {
-            readerThread.interrupt();
         }
         status = ConnectorStatus.STOPPED;
     }

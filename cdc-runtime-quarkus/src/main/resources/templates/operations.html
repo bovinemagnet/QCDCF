@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QCDCF — Operations</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+        <div class="flex items-center justify-between max-w-7xl mx-auto">
+            <h1 class="text-xl font-bold text-indigo-400">Operations</h1>
+            <div class="flex items-center gap-4">
+                <a href="/dashboard" class="text-sm text-gray-400 hover:text-indigo-400">&larr; Dashboard</a>
+                <a href="/dashboard/replication" class="text-sm text-gray-400 hover:text-indigo-400">Replication &rarr;</a>
+                <a href="/dashboard/snapshots" class="text-sm text-gray-400 hover:text-indigo-400">Snapshots &rarr;</a>
+                <a href="/dashboard/history" class="text-sm text-gray-400 hover:text-indigo-400">History &rarr;</a>
+            </div>
+        </div>
+    </nav>
+    <main class="max-w-7xl mx-auto px-6 py-8 space-y-6">
+        <div hx-get="/dashboard/fragments/ops-summary" hx-trigger="every 5s" hx-swap="innerHTML">
+            {#include fragments/operationsSummary /}
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+                 hx-get="/dashboard/fragments/ops-health" hx-trigger="every 5s" hx-swap="innerHTML">
+                {#include fragments/operationsHealth /}
+            </div>
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+                 hx-get="/dashboard/fragments/ops-resilience" hx-trigger="every 5s" hx-swap="innerHTML">
+                {#include fragments/operationsResilience /}
+            </div>
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+                 hx-get="/dashboard/fragments/ops-validation" hx-trigger="every 30s" hx-swap="innerHTML">
+                {#include fragments/operationsValidation /}
+            </div>
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-6"
+                 hx-get="/dashboard/fragments/ops-config" hx-trigger="every 60s" hx-swap="innerHTML">
+                {#include fragments/operationsConfig /}
+            </div>
+        </div>
+    </main>
+</body>
+</html>

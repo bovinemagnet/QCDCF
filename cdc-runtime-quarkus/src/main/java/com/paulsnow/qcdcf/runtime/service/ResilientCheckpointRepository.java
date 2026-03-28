@@ -68,4 +68,18 @@ public class ResilientCheckpointRepository implements CheckpointManager {
     public Optional<ConnectorCheckpoint> load(String connectorId) {
         return delegate.load(connectorId);
     }
+
+    /** Returns the current count of consecutive checkpoint save failures. */
+    public int consecutiveFailures() { return consecutiveFailures.get(); }
+
+    /**
+     * Returns {@code true} if the circuit breaker is currently open (within the cooldown window).
+     *
+     * @param cooldownSeconds the cooldown period in seconds to check against
+     */
+    public boolean isCircuitOpen(long cooldownSeconds) {
+        Instant openedAt = circuitOpenedAt.get();
+        if (openedAt == null) return false;
+        return Instant.now().isBefore(openedAt.plusSeconds(cooldownSeconds));
+    }
 }

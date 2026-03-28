@@ -1,0 +1,19 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Resilience Metrics</h2>
+<div class="space-y-3">
+    <div class="flex justify-between">
+        <span class="text-gray-400">WAL Reconnect Attempts</span>
+        <span class="font-mono text-lg text-indigo-400">{walReconnects}</span>
+    </div>
+    <div class="flex justify-between">
+        <span class="text-gray-400">Sink Publish Retries</span>
+        <span class="font-mono text-lg text-indigo-400">{sinkRetries}</span>
+    </div>
+    <div class="flex justify-between">
+        <span class="text-gray-400">Snapshot Chunk Retries</span>
+        <span class="font-mono text-lg text-indigo-400">{snapshotRetries}</span>
+    </div>
+    <div class="flex justify-between">
+        <span class="text-gray-400">Checkpoint CB Failures</span>
+        <span class="font-mono text-lg {cbFailColour}">{cbFailures}</span>
+    </div>
+</div>

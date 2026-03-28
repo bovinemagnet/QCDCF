@@ -1,0 +1,13 @@
+<h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">Pre-flight Validation</h2>
+{#if validationError}
+<p class="text-sm text-red-400 italic">{validationError}</p>
+{#else}
+<div class="space-y-2">
+    {#for check in checks}
+    <div class="flex justify-between items-centre">
+        <span class="text-gray-400 text-sm">{check.name}</span>
+        <span class="font-mono text-sm {#if check.status == 'OK'}text-emerald-400{#else if check.status == 'WARN'}text-yellow-400{#else}text-red-400{/if}">{check.status}</span>
+    </div>
+    {/for}
+</div>
+{/if}

@@ -23,6 +23,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Service layer wrapping connector operations.
@@ -38,6 +39,10 @@ public class ConnectorService {
 
     private static final Logger LOG = Logger.getLogger(ConnectorService.class);
 
+    public record SnapshotState(String table, String status, long rowCount) {
+        static final SnapshotState NONE = new SnapshotState(null, "NONE", 0);
+    }
+
     @Inject
     ConnectorBootstrap bootstrap;
 
@@ -51,9 +56,8 @@ public class ConnectorService {
     DataSource dataSource;
 
     private final Instant startTime = Instant.now();
-    private volatile String lastSnapshotTable;
-    private volatile String lastSnapshotStatus = "NONE";
-    private volatile long lastSnapshotRowCount;
+    private final AtomicReference<SnapshotState> snapshotState =
+            new AtomicReference<>(SnapshotState.NONE);
 
     /**
      * Pause the connector by stopping the WAL reader.
@@ -96,8 +100,7 @@ public class ConnectorService {
      */
     public Map<String, Object> triggerSnapshot(String tableName) {
         LOG.infof("Snapshot requested for table '%s' on connector '%s'", tableName, bootstrap.connectorId());
-        lastSnapshotTable = tableName;
-        lastSnapshotStatus = "RUNNING";
+        snapshotState.set(new SnapshotState(tableName, "RUNNING", 0));
 
         // Parse table name
         String schema = "public";
@@ -117,7 +120,7 @@ public class ConnectorService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("connectorId", bootstrap.connectorId());
         result.put("tableName", tableName);
-        result.put("snapshotStatus", lastSnapshotStatus);
+        result.put("snapshotStatus", snapshotState.get().status());
         result.put("message", "Snapshot started");
         return result;
     }
@@ -147,11 +150,10 @@ public class ConnectorService {
 
             int chunkSize = config.source().chunkSize();
             long rows = coordinator.triggerSnapshot(tableId, new SnapshotOptions(tableId, chunkSize));
-            lastSnapshotRowCount = rows;
-            lastSnapshotStatus = "COMPLETE (" + rows + " rows)";
+            snapshotState.set(new SnapshotState(tableId.canonicalName(), "COMPLETE (" + rows + " rows)", rows));
             LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
         } catch (Exception e) {
-            lastSnapshotStatus = "FAILED: " + e.getMessage();
+            snapshotState.set(new SnapshotState(snapshotState.get().table(), "FAILED: " + e.getMessage(), 0));
             LOG.errorf(e, "Snapshot failed for %s", tableId);
         }
     }
@@ -169,8 +171,9 @@ public class ConnectorService {
         result.put("uptimeSeconds", uptime.toSeconds());
         result.put("uptime", formatDuration(uptime));
         result.put("startTime", startTime.toString());
-        result.put("lastSnapshotTable", lastSnapshotTable != null ? lastSnapshotTable : "N/A");
-        result.put("lastSnapshotStatus", lastSnapshotStatus);
+        SnapshotState snapshot = snapshotState.get();
+        result.put("lastSnapshotTable", snapshot.table() != null ? snapshot.table() : "N/A");
+        result.put("lastSnapshotStatus", snapshot.status());
         return result;
     }
 
@@ -199,14 +202,14 @@ public class ConnectorService {
      * Return the last snapshot table name, or {@code null} if none requested.
      */
     public String lastSnapshotTable() {
-        return lastSnapshotTable;
+        return snapshotState.get().table();
     }
 
     /**
      * Return the last snapshot status string.
      */
     public String lastSnapshotStatus() {
-        return lastSnapshotStatus;
+        return snapshotState.get().status();
     }
 
     private static String formatDuration(Duration duration) {

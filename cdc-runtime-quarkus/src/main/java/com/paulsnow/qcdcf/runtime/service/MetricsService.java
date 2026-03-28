@@ -34,6 +34,10 @@ public class MetricsService {
     private final AtomicLong lastLsn = new AtomicLong();
     private final AtomicLong errorsCount = new AtomicLong();
 
+    private final AtomicLong walReconnectAttempts = new AtomicLong();
+    private final AtomicLong sinkPublishRetries = new AtomicLong();
+    private final AtomicLong snapshotChunkRetries = new AtomicLong();
+
     private final ConcurrentLinkedDeque<RecentEvent> recentEvents = new ConcurrentLinkedDeque<>();
     private static final int MAX_RECENT_EVENTS = 20;
 
@@ -136,6 +140,24 @@ public class MetricsService {
     public long errorsCount() {
         return errorsCount.get();
     }
+
+    /** Record a WAL reconnection attempt. */
+    public void recordWalReconnectAttempt() { walReconnectAttempts.incrementAndGet(); }
+
+    /** Record a sink publish retry. */
+    public void recordSinkPublishRetry() { sinkPublishRetries.incrementAndGet(); }
+
+    /** Record a snapshot chunk retry. */
+    public void recordSnapshotChunkRetry() { snapshotChunkRetries.incrementAndGet(); }
+
+    /** Total WAL reconnection attempts. */
+    public long walReconnectAttempts() { return walReconnectAttempts.get(); }
+
+    /** Total sink publish retries. */
+    public long sinkPublishRetries() { return sinkPublishRetries.get(); }
+
+    /** Total snapshot chunk retries. */
+    public long snapshotChunkRetries() { return snapshotChunkRetries.get(); }
 
     /** Last known LSN value, or 0 if no events received. */
     public long lastLsn() {

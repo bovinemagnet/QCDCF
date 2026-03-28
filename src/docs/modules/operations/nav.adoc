@@ -2,3 +2,4 @@
 * xref:operations:index.adoc[Overview]
 * xref:operations:deployment.adoc[Deployment]
 * xref:operations:postgresql-setup.adoc[PostgreSQL Setup for CDC]
+* xref:operations:dashboard.adoc[Dashboard Guide]

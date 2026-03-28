@@ -1,0 +1,376 @@
+= Dashboard Guide
+Paul Snow
+:description: Guide to the QCDCF operational dashboard — pages, panels, polling intervals, and troubleshooting.
+include::ROOT:partial$_attributes.adoc[]
+
+The {project-name} operational dashboard is a server-side rendered web interface served at `/dashboard`.
+It is built with HTMX and Tailwind CSS — there are no JavaScript frameworks.
+Every panel on every page uses HTMX's `hx-trigger="every Ns"` polling to refresh its content automatically from the server, so the UI remains current without requiring a manual page reload.
+
+The dashboard provides five pages:
+
+[cols="2,4", options="header"]
+|===
+|Page |URL
+
+|Main Dashboard
+|`/dashboard`
+
+|Metrics History
+|`/dashboard/history`
+
+|Snapshots & Watermarks
+|`/dashboard/snapshots`
+
+|Replication Health
+|`/dashboard/replication`
+
+|Operations
+|`/dashboard/operations`
+|===
+
+For deployment and access prerequisites, see xref:deployment.adoc[Deployment].
+For an explanation of the watermark reconciliation model that underpins the snapshot pages, see xref:ROOT:architecture.adoc[Architecture].
+
+== Main Dashboard
+
+The main dashboard (`/dashboard`) is the first stop for assessing connector health at a glance.
+It organises information into the following panels, working from top to bottom.
+
+=== Key Metrics Cards
+
+The top row shows the four most operationally significant counters, refreshed every 3 seconds:
+
+* *Total Events* — cumulative count of CDC events emitted since the connector started.
+* *Events / sec* — the current throughput rate; a sustained drop to zero while source traffic continues is a strong signal of a stall.
+* *Errors* — total error count; any non-zero value warrants investigation via the Error Log panel.
+* *Connector State* — current connector lifecycle state (e.g. `RUNNING`, `PAUSED`, `STOPPED`).
+
+=== Connector Status
+
+The connector status card (refreshed every 5 seconds) shows the connector identifier and its current state alongside a visual indicator.
+Use this when you want to confirm that a pause or resume command has taken effect.
+
+=== Event Breakdown
+
+Displayed alongside connector status (refreshed every 3 seconds), the event breakdown shows the split between `INSERT`, `UPDATE`, and `DELETE` events.
+A workload dominated by inserts is normal for append-heavy systems; an unexpected spike in deletes may indicate a bulk purge or a misconfigured upstream process.
+
+=== Monitored Tables
+
+The monitored tables panel (refreshed every 30 seconds) lists all tables currently included in the PostgreSQL publication being consumed.
+For each table it shows the schema-qualified name and any relevant metadata captured at startup.
+Use this panel to confirm that a newly added table has been picked up after a configuration change.
+
+=== Recent Events
+
+The recent events panel (refreshed every 2 seconds) is a live tail of the last few events processed by the connector.
+Each entry shows the operation type, table, and a timestamp.
+If recent events stop appearing whilst the source database is active, the connector may have stalled — check the error log and replication health page.
+
+=== Snapshot Control
+
+The snapshot control panel lets you trigger a full table snapshot without leaving the browser.
+Enter the schema-qualified table name (e.g. `public.customer`) in the input field and press *Trigger Snapshot*.
+The panel shows the table name and status of the most recent snapshot request.
+
+TIP: Triggering a snapshot posts to `POST /api/connector/snapshot`.
+You can also trigger snapshots via the REST API directly; see xref:index.adoc#_rest_api_quick_reference[REST API Quick Reference].
+
+=== Connector Controls
+
+Two buttons provide immediate lifecycle control:
+
+* *Pause Connector* — posts to `POST /api/connector/pause` and halts WAL reading.
+  Inflight events are completed before the connector stops.
+* *Resume Connector* — posts to `POST /api/connector/resume` and restarts WAL reading from the last committed LSN.
+
+After pressing either button, observe the Connector Status card to confirm the state transition.
+
+=== Error Log
+
+The error log panel sits at the bottom of the main dashboard (refreshed every 5 seconds) with a red left border to draw attention.
+It shows the most recent errors recorded by the connector, including the error message and the time at which the error occurred.
+If the error count in the metrics cards is non-zero, this is where you identify the cause.
+
+== Metrics History
+
+The Metrics History page (`/dashboard/history`) provides trend charts for the last 60 seconds of activity, rendered as SVG sparklines.
+
+=== Sparkline Charts
+
+Each chart refreshes every 2 seconds via HTMX polling:
+
+* *Events per Second (last 60s)* — the primary throughput trend, rendered as a large full-width chart.
+  A flat line at zero when source activity is expected indicates a connector stall or WAL lag accumulation.
+* *INSERTs / sec* — trend for insert operations.
+* *UPDATEs / sec* — trend for update operations.
+* *DELETEs / sec* — trend for delete operations.
+* *Errors / sec* — trend for errors.
+  Any sustained non-zero value here requires investigation.
+
+=== History Table
+
+Below the charts (refreshed every 5 seconds), a tabular summary shows per-second metrics for the last 60-second window.
+Use this table when a spike is visible in a sparkline and you need the precise values for the affected seconds.
+
+NOTE: Metrics history is held in memory for the current process lifetime.
+History is lost on connector restart.
+
+== Snapshots & Watermarks
+
+The Snapshots & Watermarks page (`/dashboard/snapshots`) provides visibility into the watermark-based reconciliation mechanism.
+All panels on this page refresh every 2 seconds except snapshot history, which refreshes every 5 seconds.
+
+For a conceptual explanation of how watermarks work, see xref:ROOT:architecture.adoc[Architecture].
+
+=== Active Snapshot Status
+
+The active snapshot panel shows whether a snapshot is currently in progress, which table is being snapshotted, and the progress through the chunk plan.
+Whilst a snapshot is running this is the primary panel to monitor.
+If a snapshot appears stuck (progress not advancing over a prolonged period), check the error log on the main dashboard and replication health for WAL lag.
+
+=== Watermark Windows
+
+The watermark windows panel shows the current low-watermark and high-watermark LSN (Log Sequence Number) positions for any active snapshot window.
+The watermark window defines the WAL range within which chunk-read rows and WAL change events are reconciled.
+
+[cols="2,4", options="header"]
+|===
+|Field |Meaning
+
+|Low watermark LSN
+|The LSN at which the snapshot chunk read began.
+ WAL events before this position are ignored during reconciliation.
+
+|High watermark LSN
+|The LSN at which the chunk read completed.
+ WAL events between the low and high watermarks that touch the same primary key as a chunk row supersede the chunk row in the output.
+
+|Window state
+|`OPEN` whilst the chunk is being read; `CLOSED` once the high watermark has been written.
+|===
+
+=== Watermark WAL Events
+
+This panel shows the watermark write events that have appeared in the WAL stream, confirming that the PostgreSQL replication slot is delivering the low and high watermark markers written by the framework.
+If watermark events are absent during an active snapshot, the replication slot may not be receiving writes — check the Replication Health page.
+
+=== Snapshot History
+
+The snapshot history panel lists previously completed snapshots with their table name, start time, end time, row count, and outcome.
+Use this to verify that a snapshot triggered via the Snapshot Control panel completed successfully.
+
+== Replication Health
+
+The Replication Health page (`/dashboard/replication`) is the primary diagnostic surface for WAL replication issues.
+
+=== Key Health Cards
+
+The top row (refreshed every 5 seconds) shows the key replication health indicators:
+
+* *WAL Lag* — the number of bytes between the replication slot's confirmed flush LSN and the current WAL write LSN on the primary.
+  Growing lag whilst the connector is running indicates the connector is not keeping up with the WAL production rate.
+* *Slot Status* — whether the replication slot is active (connected and streaming) or inactive.
+  An inactive slot whilst the connector reports `RUNNING` indicates a broken replication connection.
+* *Slot Name* — the logical replication slot name configured for this connector instance.
+* *Plugin* — the output plugin in use (expected to be `pgoutput`).
+
+WARNING: A replication slot that is inactive for a prolonged period allows WAL to accumulate on the PostgreSQL server.
+If WAL accumulates until the disk fills, PostgreSQL will shut down.
+Monitor WAL lag in production and set an alert threshold appropriate to your disk capacity.
+
+=== Slot Details
+
+The slot details panel (refreshed every 10 seconds) shows the full `pg_replication_slots` row for the connector's slot, including:
+
+* `confirmed_flush_lsn` — the LSN up to which the connector has acknowledged receipt.
+* `restart_lsn` — the LSN from which PostgreSQL must retain WAL for this slot.
+* `temporary` — whether the slot is temporary (lost on disconnect) or persistent.
+
+=== Replication Configuration
+
+The replication configuration panel (refreshed every 10 seconds) shows the publication name, output plugin, and connection parameters in use.
+Use this to verify that the connector is using the expected slot and publication, particularly after a configuration change.
+
+=== Danger Zone
+
+The danger zone panel (refreshed every 15 seconds, red left border) surfaces conditions that could lead to data loss or service disruption:
+
+* Slot not active whilst connector is running.
+* WAL lag exceeding a warning threshold.
+* Slot `restart_lsn` significantly behind the current WAL position.
+
+If any danger condition is flagged, address it before the situation degrades further.
+The Operations page provides additional health check detail.
+
+== Operations
+
+The Operations page (`/dashboard/operations`) provides a health-oriented view focused on resilience, pre-flight validation, and configuration.
+All panels refresh every 5 seconds except pre-flight validation (every 30 seconds) and configuration (every 60 seconds).
+
+=== Health Summary
+
+The health summary panel (refreshed every 5 seconds) shows the combined result of all registered Quarkus SmallRye Health checks.
+A `DOWN` result here will be reflected in the Kubernetes readiness probe at `/q/health/ready`.
+
+=== Health Checks Detail
+
+The health checks panel (refreshed every 5 seconds) shows the individual result of each registered health check with its name and status.
+Use this to identify which specific check is failing when the overall health summary reports `DOWN`.
+
+=== Resilience Metrics
+
+The resilience metrics panel (refreshed every 5 seconds) shows retry counts and circuit-breaker state for the connector's resilience mechanisms:
+
+* *Retry attempts* — the number of automatic retry attempts made by the connector since startup.
+* *Circuit breaker state* — `CLOSED` (normal), `OPEN` (failing, requests rejected), or `HALF_OPEN` (testing recovery).
+
+If the circuit breaker is `OPEN`, the connector is not attempting operations.
+Wait for it to transition to `HALF_OPEN` and then `CLOSED`, or investigate and resolve the underlying failure.
+
+=== Pre-Flight Validation
+
+The pre-flight validation panel (refreshed every 30 seconds) runs the same checks as `GET /api/cli/check` and reports `OK`, `WARN`, or `FAIL` for each prerequisite:
+
+* WAL level is set to `logical`.
+* The configured publication exists.
+* The replication slot exists and is of type `logical`.
+* The framework's internal watermark table is present.
+* The connector role has the required privileges.
+
+A `FAIL` result for any item indicates a configuration or environment problem that will prevent correct CDC operation.
+Address all failures before relying on the connector for data delivery.
+
+TIP: Run `curl http://localhost:8080/api/cli/check | jq .` from a terminal to retrieve the same validation results without opening the browser.
+
+=== Configuration Display
+
+The configuration panel (refreshed every 60 seconds) shows the effective connector configuration as seen by the runtime, including database connection parameters (with credentials redacted), publication name, slot name, and chunk size.
+Use this to confirm that environment variable overrides have taken effect after a redeployment.
+
+== Polling Intervals
+
+The table below summarises the HTMX polling interval for every fragment across the dashboard.
+Higher-frequency fragments increase server load; lower-frequency fragments reduce immediacy.
+Adjust polling intervals in the Qute templates if your environment requires different trade-offs.
+
+[cols="3,2,5", options="header"]
+|===
+|Fragment |Interval |Rationale
+
+|Key metrics cards (main)
+|3 s
+|Primary health indicator; needs to be near real-time.
+
+|Connector status
+|5 s
+|State transitions are infrequent; 5 s is sufficient.
+
+|Event breakdown
+|3 s
+|Throughput split changes on the same cadence as total events.
+
+|Monitored tables
+|30 s
+|Table list changes only on configuration updates.
+
+|Recent events
+|2 s
+|Live tail; fast polling maximises freshness.
+
+|Snapshot control / error log
+|5 s
+|Error conditions and snapshot state warrant frequent checks.
+
+|History sparklines
+|2 s
+|Trend charts require frequent updates to appear animated.
+
+|History table
+|5 s
+|Tabular summary; slightly slower is acceptable.
+
+|Active snapshot / watermark panels
+|2 s
+|Fast-moving during a snapshot; slow polling would miss updates.
+
+|Snapshot history
+|5 s
+|Completed snapshots do not change; 5 s is sufficient.
+
+|Replication health cards
+|5 s
+|WAL lag can grow quickly; near-frequent polling is advisable.
+
+|Replication slot details / config
+|10 s
+|Slot metadata changes infrequently.
+
+|Replication danger zone
+|15 s
+|Danger conditions persist; 15 s keeps load low.
+
+|Operations summary / health / resilience
+|5 s
+|Health state changes need prompt surfacing.
+
+|Pre-flight validation
+|30 s
+|Validation runs database queries; 30 s avoids unnecessary load.
+
+|Configuration display
+|60 s
+|Configuration is static between restarts.
+|===
+
+== Troubleshooting
+
+=== Dashboard Shows Stale Data
+
+*Symptom:* Panels are not updating; data appears frozen.
+
+*Causes and remedies:*
+
+. *Network or proxy timeout* — HTMX polls using standard HTTP GET requests.
+  A proxy or load balancer with an aggressive idle connection timeout may be silently dropping long-lived polling connections.
+  Check your proxy configuration and increase idle timeouts, or enable WebSocket upgrade support.
+. *Server overload* — if the Quarkus runtime is under heavy load, fragment requests may queue behind application work.
+  Check the Operations page health summary (if it is still reachable) and the Quarkus runtime logs.
+. *Browser tab backgrounded* — some browsers throttle timers in background tabs.
+  Bring the tab to the foreground to restore normal polling.
+
+=== Dashboard Is Unreachable
+
+*Symptom:* Browser shows a connection refused or timeout error for `/dashboard`.
+
+*Remedies:*
+
+. Confirm the Quarkus runtime is running: `curl http://localhost:8080/q/health/live`.
+. Check the runtime process logs for startup errors.
+. Verify the configured HTTP port matches the URL you are using (default: `8080`).
+. If running in a container, confirm the container port is published and the host port is accessible.
+
+=== Connector Shows RUNNING But No Events Appear
+
+*Symptom:* Connector state is `RUNNING`, events-per-second is zero, and recent events panel is empty.
+
+*Investigation steps:*
+
+. Go to the Replication Health page — check WAL lag and slot status.
+  A growing lag with an active slot suggests the connector is connected but not processing events fast enough.
+  An inactive slot suggests the replication connection has been lost despite the connector believing it is running.
+. Go to the main dashboard error log — look for repeated errors that may indicate a processing failure.
+. Go to the Operations page pre-flight validation — confirm all prerequisites are still satisfied.
+  A `pg_replication_slots` entry disappearing whilst the connector runs would cause silent event loss.
+
+=== Snapshot Appears Stuck
+
+*Symptom:* A snapshot was triggered but the active snapshot panel shows no progress for a prolonged period.
+
+*Investigation steps:*
+
+. Check the watermark WAL events panel — if no watermark events are appearing in the WAL, the replication slot may not be receiving writes from the snapshot's watermark table writes.
+. Check the main dashboard error log for chunk-read errors.
+. Verify that the table specified for the snapshot exists and the connector role has `SELECT` privilege on it.
+. If the snapshot does not recover, pause and resume the connector to reset state, then re-trigger the snapshot.

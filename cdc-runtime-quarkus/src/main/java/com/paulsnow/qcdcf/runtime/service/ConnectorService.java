@@ -1,6 +1,7 @@
 package com.paulsnow.qcdcf.runtime.service;
 
 import com.paulsnow.qcdcf.core.connector.ConnectorStatus;
+import com.paulsnow.qcdcf.core.exception.SourceReadException;
 import com.paulsnow.qcdcf.core.snapshot.DefaultChunkPlanner;
 import com.paulsnow.qcdcf.core.snapshot.DefaultSnapshotCoordinator;
 import com.paulsnow.qcdcf.core.snapshot.SnapshotOptions;
@@ -15,14 +16,18 @@ import com.paulsnow.qcdcf.runtime.bootstrap.ConnectorBootstrap;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.context.ManagedExecutor;
+import org.eclipse.microprofile.faulttolerance.Retry;
 import org.jboss.logging.Logger;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Service layer wrapping connector operations.
@@ -38,6 +43,10 @@ public class ConnectorService {
 
     private static final Logger LOG = Logger.getLogger(ConnectorService.class);
 
+    public record SnapshotState(String table, String status, long rowCount) {
+        static final SnapshotState NONE = new SnapshotState(null, "NONE", 0);
+    }
+
     @Inject
     ConnectorBootstrap bootstrap;
 
@@ -50,10 +59,12 @@ public class ConnectorService {
     @Inject
     DataSource dataSource;
 
+    @Inject
+    ManagedExecutor executor;
+
     private final Instant startTime = Instant.now();
-    private volatile String lastSnapshotTable;
-    private volatile String lastSnapshotStatus = "NONE";
-    private volatile long lastSnapshotRowCount;
+    private final AtomicReference<SnapshotState> snapshotState =
+            new AtomicReference<>(SnapshotState.NONE);
 
     /**
      * Pause the connector by stopping the WAL reader.
@@ -96,8 +107,7 @@ public class ConnectorService {
      */
     public Map<String, Object> triggerSnapshot(String tableName) {
         LOG.infof("Snapshot requested for table '%s' on connector '%s'", tableName, bootstrap.connectorId());
-        lastSnapshotTable = tableName;
-        lastSnapshotStatus = "RUNNING";
+        snapshotState.set(new SnapshotState(tableName, "RUNNING", 0));
 
         // Parse table name
         String schema = "public";
@@ -110,19 +120,29 @@ public class ConnectorService {
         TableId tableId = new TableId(schema, table);
 
         // Run snapshot on background thread to avoid blocking the REST call
-        Thread snapshotThread = new Thread(() -> executeSnapshot(tableId), "qcdcf-snapshot-" + tableName);
-        snapshotThread.setDaemon(true);
-        snapshotThread.start();
+        executor.submit(() -> executeSnapshot(tableId));
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("connectorId", bootstrap.connectorId());
         result.put("tableName", tableName);
-        result.put("snapshotStatus", lastSnapshotStatus);
+        result.put("snapshotStatus", snapshotState.get().status());
         result.put("message", "Snapshot started");
         return result;
     }
 
     private void executeSnapshot(TableId tableId) {
+        try {
+            long rows = executeSnapshotWithRetry(tableId);
+            snapshotState.set(new SnapshotState(tableId.canonicalName(), "COMPLETE (" + rows + " rows)", rows));
+            LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
+        } catch (Exception e) {
+            snapshotState.set(new SnapshotState(snapshotState.get().table(), "FAILED: " + e.getMessage(), 0));
+            LOG.errorf(e, "Snapshot failed for %s after retries", tableId);
+        }
+    }
+
+    @Retry(maxRetries = 3, delay = 2000, retryOn = {SourceReadException.class, SQLException.class})
+    long executeSnapshotWithRetry(TableId tableId) throws Exception {
         try (Connection conn = dataSource.getConnection()) {
             // Load metadata
             var metadataReader = new PostgresTableMetadataReader();
@@ -146,13 +166,7 @@ public class ConnectorService {
             );
 
             int chunkSize = config.source().chunkSize();
-            long rows = coordinator.triggerSnapshot(tableId, new SnapshotOptions(tableId, chunkSize));
-            lastSnapshotRowCount = rows;
-            lastSnapshotStatus = "COMPLETE (" + rows + " rows)";
-            LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
-        } catch (Exception e) {
-            lastSnapshotStatus = "FAILED: " + e.getMessage();
-            LOG.errorf(e, "Snapshot failed for %s", tableId);
+            return coordinator.triggerSnapshot(tableId, new SnapshotOptions(tableId, chunkSize));
         }
     }
 
@@ -169,8 +183,9 @@ public class ConnectorService {
         result.put("uptimeSeconds", uptime.toSeconds());
         result.put("uptime", formatDuration(uptime));
         result.put("startTime", startTime.toString());
-        result.put("lastSnapshotTable", lastSnapshotTable != null ? lastSnapshotTable : "N/A");
-        result.put("lastSnapshotStatus", lastSnapshotStatus);
+        SnapshotState snapshot = snapshotState.get();
+        result.put("lastSnapshotTable", snapshot.table() != null ? snapshot.table() : "N/A");
+        result.put("lastSnapshotStatus", snapshot.status());
         return result;
     }
 
@@ -199,14 +214,14 @@ public class ConnectorService {
      * Return the last snapshot table name, or {@code null} if none requested.
      */
     public String lastSnapshotTable() {
-        return lastSnapshotTable;
+        return snapshotState.get().table();
     }
 
     /**
      * Return the last snapshot status string.
      */
     public String lastSnapshotStatus() {
-        return lastSnapshotStatus;
+        return snapshotState.get().status();
     }
 
     private static String formatDuration(Duration duration) {

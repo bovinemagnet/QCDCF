@@ -22,6 +22,8 @@ import java.util.*;
  *       merges buffered log events with snapshot data, removing key collisions</li>
  *   <li>The merged result is emitted to the sink</li>
  * </ol>
+ * <strong>Thread safety:</strong> This class is NOT thread-safe. It must only be called
+ * from the WAL reader thread. All methods assume single-threaded access.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -32,6 +34,7 @@ public class WatermarkAwareEventRouter {
 
     private final ReconciliationEngine reconciliationEngine;
     private final EventSink sink;
+    private final int maxBufferSize;
 
     // Active window state
     private WatermarkWindow activeWindow;
@@ -39,8 +42,13 @@ public class WatermarkAwareEventRouter {
     private List<ChangeEnvelope> snapshotChunkEvents = List.of();
 
     public WatermarkAwareEventRouter(ReconciliationEngine reconciliationEngine, EventSink sink) {
+        this(reconciliationEngine, sink, 100_000);
+    }
+
+    public WatermarkAwareEventRouter(ReconciliationEngine reconciliationEngine, EventSink sink, int maxBufferSize) {
         this.reconciliationEngine = reconciliationEngine;
         this.sink = sink;
+        this.maxBufferSize = maxBufferSize;
     }
 
     /**
@@ -60,6 +68,12 @@ public class WatermarkAwareEventRouter {
 
         // Window is open — buffer LOG events for reconciliation
         if (event.captureMode() == CaptureMode.LOG) {
+            if (bufferedLogEvents.size() >= maxBufferSize) {
+                LOG.error("Watermark buffer overflow ({} events) — cancelling window for table {}",
+                        maxBufferSize, activeWindow.tableId());
+                cancelWindow(activeWindow);
+                throw new IllegalStateException("Watermark buffer overflow: " + maxBufferSize + " events");
+            }
             bufferedLogEvents.add(event);
             LOG.debug("Buffered LOG event for key {} in window {}",
                     event.key().toCanonical(), activeWindow.windowId());
@@ -132,6 +146,22 @@ public class WatermarkAwareEventRouter {
         activeWindow = null;
         bufferedLogEvents.clear();
         snapshotChunkEvents = List.of();
+    }
+
+    /**
+     * Cancels the given window without reconciliation.
+     * <p>
+     * Used when a snapshot chunk fails mid-window. Discards buffered events
+     * and resets window state so a new window can be opened for retry.
+     *
+     * @param window the window to cancel
+     */
+    public void cancelWindow(WatermarkWindow window) {
+        LOG.warn("Cancelling watermark window {} for table {} chunk {}",
+                window.windowId(), window.tableId(), window.chunkIndex());
+        bufferedLogEvents.clear();
+        snapshotChunkEvents = List.of();
+        activeWindow = null;
     }
 
     /**

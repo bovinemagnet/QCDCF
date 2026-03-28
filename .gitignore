@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# Worktrees
+.worktrees/
+
 # Eclipse
 .project
 .classpath
@@ -39,3 +42,7 @@ nb-configuration.xml
 /.quarkus/cli/plugins/
 # TLS Certificates
 .certs/
+
+.playwright-mcp
+#superpowers/
+.claude/

@@ -30,6 +30,8 @@ class DefaultSnapshotCoordinatorTest {
             public WatermarkWindow closeWindow(WatermarkWindow window) {
                 return window.close(Instant.now());
             }
+            @Override
+            public void cancelWindow(WatermarkWindow window) { /* no-op in test */ }
         };
 
         // Mock chunk reader: returns 3 rows for chunk 0, 2 rows for chunk 1 (less than chunk size = done)
@@ -80,6 +82,8 @@ class DefaultSnapshotCoordinatorTest {
             public WatermarkWindow closeWindow(WatermarkWindow window) {
                 return window.close(Instant.now());
             }
+            @Override
+            public void cancelWindow(WatermarkWindow window) { /* no-op in test */ }
         };
 
         DefaultSnapshotCoordinator.ChunkReader reader = plan -> {
@@ -119,6 +123,8 @@ class DefaultSnapshotCoordinatorTest {
             public WatermarkWindow closeWindow(WatermarkWindow window) {
                 return window.close(Instant.now());
             }
+            @Override
+            public void cancelWindow(WatermarkWindow window) { /* no-op in test */ }
         };
 
         // Empty table: first chunk returns 0 rows

@@ -21,6 +21,15 @@ public interface ConnectorRuntimeConfig {
     /** Sink configuration. */
     SinkConfig sink();
 
+    /** Resilience configuration. */
+    ResilienceConfig resilience();
+
+    /** Health check configuration. */
+    HealthConfig health();
+
+    /** Snapshot configuration. */
+    SnapshotConfig snapshot();
+
     interface ConnectorConfig {
         @WithDefault("default-connector")
         String id();
@@ -28,6 +37,9 @@ public interface ConnectorRuntimeConfig {
         /** Whether to auto-start the WAL reader on application startup. */
         @WithDefault("true")
         boolean autoStart();
+
+        @WithDefault("true")
+        boolean validateOnStartup();
     }
 
     interface SourceConfig {
@@ -39,6 +51,59 @@ public interface ConnectorRuntimeConfig {
 
         @WithDefault("1000")
         int chunkSize();
+    }
+
+    interface ResilienceConfig {
+        WalRetryConfig walRetry();
+        SnapshotRetryConfig snapshotRetry();
+        SinkRetryConfig sinkRetry();
+        CheckpointCbConfig checkpointCb();
+
+        interface WalRetryConfig {
+            @WithDefault("1s")
+            String delay();
+            @WithDefault("60s")
+            String maxDelay();
+            @WithDefault("200ms")
+            String jitter();
+        }
+
+        interface SnapshotRetryConfig {
+            @WithDefault("3")
+            int maxRetries();
+            @WithDefault("2s")
+            String delay();
+        }
+
+        interface SinkRetryConfig {
+            @WithDefault("3")
+            int maxRetries();
+            @WithDefault("500ms")
+            String delay();
+            @WithDefault("5s")
+            String timeout();
+        }
+
+        interface CheckpointCbConfig {
+            @WithDefault("5")
+            int failureThreshold();
+            @WithDefault("10s")
+            String window();
+            @WithDefault("30s")
+            String halfOpenDelay();
+        }
+    }
+
+    interface HealthConfig {
+        @WithDefault("60s")
+        String walLagThreshold();
+        @WithDefault("10m")
+        String sustainedFailureThreshold();
+    }
+
+    interface SnapshotConfig {
+        @WithDefault("100000")
+        int maxBufferSize();
     }
 
     interface SinkConfig {

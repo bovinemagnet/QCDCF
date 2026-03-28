@@ -7,6 +7,7 @@ import com.paulsnow.qcdcf.runtime.kafka.EventSerializer;
 import com.paulsnow.qcdcf.runtime.kafka.KafkaEventSink;
 import com.paulsnow.qcdcf.runtime.kafka.PartitionKeyStrategy;
 import com.paulsnow.qcdcf.runtime.kafka.TopicRouter;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
@@ -34,11 +35,13 @@ public class EventSinkProducer {
     @Inject
     ConnectorRuntimeConfig config;
 
+    private EventSink createdSink;
+
     @Produces
     @ApplicationScoped
     public EventSink createSink() {
         String sinkType = config.sink().type();
-        return switch (sinkType) {
+        EventSink sink = switch (sinkType) {
             case "kafka" -> createKafkaSink();
             case "logging" -> {
                 LOG.info("Using LoggingEventSink");
@@ -49,6 +52,33 @@ public class EventSinkProducer {
                 yield new LoggingEventSink();
             }
         };
+
+        int maxRetries = config.resilience().sinkRetry().maxRetries();
+        String delayStr = config.resilience().sinkRetry().delay();
+        long delayMs = parseDelayMs(delayStr);
+        EventSink retrying = new RetryingEventSink(sink, maxRetries, delayMs);
+        LOG.info("Wrapped sink with RetryingEventSink (maxRetries={}, delay={})", maxRetries, delayStr);
+
+        createdSink = retrying;
+        return retrying;
+    }
+
+    @PreDestroy
+    void cleanup() {
+        if (createdSink != null) {
+            try {
+                createdSink.close();
+            } catch (Exception e) {
+                LOG.warn("Error closing EventSink: {}", e.getMessage());
+            }
+        }
+    }
+
+    private static long parseDelayMs(String delay) {
+        delay = delay.trim().toLowerCase();
+        if (delay.endsWith("ms")) return Long.parseLong(delay.replace("ms", ""));
+        if (delay.endsWith("s")) return (long) (Double.parseDouble(delay.replace("s", "")) * 1000);
+        return Long.parseLong(delay);
     }
 
     private KafkaEventSink createKafkaSink() {

@@ -4,6 +4,7 @@ import com.paulsnow.qcdcf.model.TableId;
 import com.paulsnow.qcdcf.postgres.metadata.PostgresTableMetadataReader;
 import com.paulsnow.qcdcf.postgres.metadata.TableMetadata;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
+import com.paulsnow.qcdcf.runtime.service.ConnectorValidator;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -12,8 +13,6 @@ import jakarta.ws.rs.core.MediaType;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,7 +22,8 @@ import java.util.Map;
  * REST endpoint that validates PostgreSQL prerequisites for CDC.
  * <p>
  * Checks connectivity, WAL level, replication slot, publication,
- * replica identity, and watermark table.
+ * replica identity, and watermark table. Delegates parameterised
+ * queries to {@link ConnectorValidator}.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -38,6 +38,9 @@ public class CheckCommand {
     @Inject
     ConnectorRuntimeConfig config;
 
+    @Inject
+    ConnectorValidator validator;
+
     @GET
     @Path("/check")
     public Map<String, Object> check() {
@@ -51,47 +54,29 @@ public class CheckCommand {
             passed++;
 
             // 2. WAL level
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery("SHOW wal_level")) {
-                rs.next();
-                String walLevel = rs.getString(1);
-                if ("logical".equals(walLevel)) {
-                    checks.add(Map.of("check", "WAL level", "status", "OK", "value", walLevel));
-                    passed++;
-                } else {
-                    checks.add(Map.of("check", "WAL level", "status", "FAIL", "value", walLevel, "expected", "logical"));
-                    failed++;
-                }
+            var walResults = validator.validateWalLevel(conn);
+            checks.addAll(walResults);
+            for (var r : walResults) {
+                if ("OK".equals(r.get("status"))) passed++;
+                else if ("FAIL".equals(r.get("status"))) failed++;
             }
 
             // 3. Replication slot
             String slotName = config.source().slotName();
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery(
-                         "SELECT active FROM pg_replication_slots WHERE slot_name = '" + slotName + "'")) {
-                if (rs.next()) {
-                    checks.add(Map.of("check", "Replication slot '" + slotName + "'", "status", "OK",
-                            "active", String.valueOf(rs.getBoolean("active"))));
-                    passed++;
-                } else {
-                    checks.add(Map.of("check", "Replication slot '" + slotName + "'", "status", "WARN",
-                            "detail", "Not found — will be created on start"));
-                }
+            var slotResults = validator.validateSlot(conn, slotName);
+            checks.addAll(slotResults);
+            for (var r : slotResults) {
+                if ("OK".equals(r.get("status"))) passed++;
+                else if ("FAIL".equals(r.get("status"))) failed++;
             }
 
             // 4. Publication
             String pubName = config.source().publicationName();
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery(
-                         "SELECT 1 FROM pg_publication WHERE pubname = '" + pubName + "'")) {
-                if (rs.next()) {
-                    checks.add(Map.of("check", "Publication '" + pubName + "'", "status", "OK"));
-                    passed++;
-                } else {
-                    checks.add(Map.of("check", "Publication '" + pubName + "'", "status", "FAIL",
-                            "detail", "Not found — create with: CREATE PUBLICATION " + pubName + " FOR TABLE ..."));
-                    failed++;
-                }
+            var pubResults = validator.validatePublication(conn, pubName);
+            checks.addAll(pubResults);
+            for (var r : pubResults) {
+                if ("OK".equals(r.get("status"))) passed++;
+                else if ("FAIL".equals(r.get("status"))) failed++;
             }
 
             // 5. Published tables
@@ -117,16 +102,11 @@ public class CheckCommand {
             }
 
             // 6. Watermark table
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery(
-                         "SELECT 1 FROM information_schema.tables WHERE table_name = 'qcdcf_watermark'")) {
-                if (rs.next()) {
-                    checks.add(Map.of("check", "Watermark table", "status", "OK"));
-                    passed++;
-                } else {
-                    checks.add(Map.of("check", "Watermark table", "status", "WARN",
-                            "detail", "Not found — will be created on first snapshot"));
-                }
+            var watermarkResults = validator.validateWatermarkTable(conn);
+            checks.addAll(watermarkResults);
+            for (var r : watermarkResults) {
+                if ("OK".equals(r.get("status"))) passed++;
+                else if ("FAIL".equals(r.get("status"))) failed++;
             }
 
         } catch (Exception e) {

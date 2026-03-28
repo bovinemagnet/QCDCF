@@ -1,6 +1,7 @@
 package com.paulsnow.qcdcf.runtime.bootstrap;
 
 import com.paulsnow.qcdcf.core.connector.ConnectorStatus;
+import com.paulsnow.qcdcf.core.exception.SourceReadException;
 import com.paulsnow.qcdcf.core.sink.EventSink;
 import com.paulsnow.qcdcf.core.sink.PublishResult;
 import com.paulsnow.qcdcf.model.ChangeEnvelope;
@@ -9,23 +10,29 @@ import com.paulsnow.qcdcf.postgres.replication.PgOutputMessageDecoder;
 import com.paulsnow.qcdcf.postgres.replication.PostgresLogStreamReader;
 import com.paulsnow.qcdcf.postgres.replication.PostgresLogicalReplicationClient;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
-import com.paulsnow.qcdcf.runtime.messaging.WalIngressChannelBridge;
+import com.paulsnow.qcdcf.runtime.service.ConnectorValidator;
+import com.paulsnow.qcdcf.runtime.service.MetricsService;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.faulttolerance.Retry;
 import org.jboss.logging.Logger;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 /**
  * Bootstraps the CDC connector on application startup.
  * <p>
  * Creates the WAL capture pipeline components (replication client, decoder, normaliser)
- * and wires them through the {@link WalIngressChannelBridge} into the reactive messaging
- * channels. The blocking replication reader runs on a dedicated daemon thread.
+ * and wires them through a metrics-aware {@link EventSink} decorator. The blocking
+ * replication reader runs on a dedicated daemon thread.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -38,7 +45,16 @@ public class ConnectorBootstrap {
     private final ConnectorRuntimeConfig config;
 
     @Inject
-    WalIngressChannelBridge bridge;
+    EventSink eventSink;
+
+    @Inject
+    MetricsService metricsService;
+
+    @Inject
+    ConnectorValidator validator;
+
+    @Inject
+    javax.sql.DataSource dataSource;
 
     @ConfigProperty(name = "quarkus.datasource.jdbc.url")
     String jdbcUrl;
@@ -49,9 +65,12 @@ public class ConnectorBootstrap {
     @ConfigProperty(name = "quarkus.datasource.password")
     String password;
 
+    @Inject
+    ManagedExecutor executor;
+
     private volatile ConnectorStatus status = ConnectorStatus.STOPPED;
+    private volatile Instant lastSuccessfulConnection;
     private PostgresLogStreamReader reader;
-    private Thread readerThread;
 
     public ConnectorBootstrap(ConnectorRuntimeConfig config) {
         this.config = config;
@@ -66,6 +85,22 @@ public class ConnectorBootstrap {
             return;
         }
 
+        if (config.connector().validateOnStartup()) {
+            try (java.sql.Connection conn = dataSource.getConnection()) {
+                if (!validator.validateAll(conn, config.source().slotName(), config.source().publicationName())) {
+                    status = ConnectorStatus.FAILED;
+                    lastError = "Startup validation failed — check logs for details";
+                    LOG.errorf("Connector '%s' failed startup validation", config.connector().id());
+                    return;
+                }
+            } catch (Exception e) {
+                status = ConnectorStatus.FAILED;
+                lastError = "Cannot connect to database: " + e.getMessage();
+                LOG.errorf("Connector '%s' startup validation failed: %s", config.connector().id(), e.getMessage());
+                return;
+            }
+        }
+
         startWalReader();
     }
 
@@ -76,7 +111,22 @@ public class ConnectorBootstrap {
      */
     public void startWalReader() {
         status = ConnectorStatus.STARTING;
+        executor.submit(() -> {
+            try {
+                startWalReaderWithRetry();
+            } catch (Exception e) {
+                String hint = diagnoseFailure(e);
+                LOG.errorf("WAL reader permanently failed for connector '%s': %s%s",
+                        config.connector().id(), e.getMessage(), hint);
+                lastError = e.getMessage() + hint;
+                status = ConnectorStatus.FAILED;
+            }
+        });
+    }
 
+    @Retry(maxRetries = -1, delay = 1000, jitter = 200,
+           retryOn = {SourceReadException.class, RuntimeException.class})
+    void startWalReaderWithRetry() {
         PostgresLogicalReplicationClient client = new PostgresLogicalReplicationClient(
                 jdbcUrl, username, password,
                 config.source().slotName(),
@@ -86,38 +136,36 @@ public class ConnectorBootstrap {
         PgOutputMessageDecoder decoder = new PgOutputMessageDecoder();
         PgOutputEventNormaliser normaliser = new PgOutputEventNormaliser(config.connector().id());
 
-        EventSink bridgeSink = new EventSink() {
+        EventSink metricsSink = new EventSink() {
             @Override
             public PublishResult publish(ChangeEnvelope event) {
-                bridge.emit(event);
-                return new PublishResult.Success(1);
+                PublishResult result = eventSink.publish(event);
+                if (result.isSuccess()) {
+                    metricsService.recordEvent(event);
+                } else {
+                    var failure = (PublishResult.Failure) result;
+                    metricsService.recordError(String.format("Sink publication failed for %s: %s",
+                            event.tableId(), failure.reason()));
+                }
+                return result;
             }
 
             @Override
             public PublishResult publishBatch(List<ChangeEnvelope> events) {
-                events.forEach(bridge::emit);
-                return new PublishResult.Success(events.size());
+                PublishResult result = eventSink.publishBatch(events);
+                if (result.isSuccess()) {
+                    events.forEach(metricsService::recordEvent);
+                }
+                return result;
             }
         };
 
-        reader = new PostgresLogStreamReader(client, decoder, normaliser, bridgeSink);
+        reader = new PostgresLogStreamReader(client, decoder, normaliser, metricsSink);
 
-        readerThread = new Thread(() -> {
-            try {
-                reader.start(0);
-            } catch (Exception e) {
-                String hint = diagnoseFailure(e);
-                LOG.errorf("WAL reader failed for connector '%s': %s%s",
-                        config.connector().id(), e.getMessage(), hint);
-                lastError = e.getMessage() + hint;
-                status = ConnectorStatus.FAILED;
-            }
-        }, "qcdcf-wal-reader-" + config.connector().id());
-        readerThread.setDaemon(true);
-        readerThread.start();
-
+        lastSuccessfulConnection = Instant.now();
         status = ConnectorStatus.RUNNING;
         LOG.infof("QCDCF connector '%s' is running", config.connector().id());
+        reader.start(0);
     }
 
     private String lastError;
@@ -125,6 +173,11 @@ public class ConnectorBootstrap {
     /** Returns the last error message, or null if no error. */
     public String lastError() {
         return lastError;
+    }
+
+    /** Returns the instant of the last successful WAL connection, or null if never connected. */
+    public Instant lastSuccessfulConnection() {
+        return lastSuccessfulConnection;
     }
 
     /** Provides actionable hints based on common failure causes. */
@@ -156,8 +209,13 @@ public class ConnectorBootstrap {
         if (reader != null) {
             reader.stop();
         }
-        if (readerThread != null) {
-            readerThread.interrupt();
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                LOG.warnf("Executor did not terminate within 10 seconds for connector '%s'", config.connector().id());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
         status = ConnectorStatus.STOPPED;
         LOG.infof("QCDCF connector '%s' stopped", config.connector().id());
@@ -179,9 +237,6 @@ public class ConnectorBootstrap {
         LOG.infof("Stop requested for connector '%s'", config.connector().id());
         if (reader != null) {
             reader.stop();
-        }
-        if (readerThread != null) {
-            readerThread.interrupt();
         }
         status = ConnectorStatus.STOPPED;
     }

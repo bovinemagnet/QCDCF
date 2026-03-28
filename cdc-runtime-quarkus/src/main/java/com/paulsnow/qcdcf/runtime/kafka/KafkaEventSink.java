@@ -8,6 +8,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Properties;
 
@@ -77,7 +78,11 @@ public class KafkaEventSink implements EventSink {
     /**
      * Closes the underlying Kafka producer, releasing all resources.
      */
+    @Override
     public void close() {
-        producer.close();
+        LOG.info("Closing Kafka producer");
+        if (producer != null) {
+            producer.close(Duration.ofSeconds(5));
+        }
     }
 }

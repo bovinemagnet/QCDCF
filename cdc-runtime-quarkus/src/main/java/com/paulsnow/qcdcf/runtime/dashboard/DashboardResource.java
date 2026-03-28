@@ -16,10 +16,12 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 
+import org.jboss.logging.Logger;
+
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -39,6 +41,8 @@ import java.util.Map;
  */
 @Path("/dashboard")
 public class DashboardResource {
+
+    private static final Logger LOG = Logger.getLogger(DashboardResource.class);
 
     /* ── Colour constants for sparklines ─────────────────────────────── */
     private static final String COLOUR_INDIGO = "#818cf8";
@@ -543,7 +547,7 @@ public class DashboardResource {
                 tableList.add(entry);
             }
         } catch (Exception e) {
-            // Database unavailable — show empty state
+            LOG.warnf("Database unavailable for table metadata: %s", e.getMessage());
         }
 
         return template
@@ -551,13 +555,18 @@ public class DashboardResource {
                 .data("tables", tableList);
     }
 
-    private static long countRows(Connection conn, TableId tableId) {
-        try (Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(
-                     "SELECT reltuples::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
-                     "WHERE n.nspname = '" + tableId.schema() + "' AND c.relname = '" + tableId.table() + "'")) {
-            if (rs.next()) return Math.max(0, rs.getLong(1));
-        } catch (Exception ignored) {}
+    private long countRows(Connection conn, TableId tableId) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT reltuples::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+                "WHERE n.nspname = ? AND c.relname = ?")) {
+            ps.setString(1, tableId.schema());
+            ps.setString(2, tableId.table());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return Math.max(0, rs.getLong(1));
+            }
+        } catch (Exception e) {
+            LOG.warnf("Failed to count rows for table %s: %s", tableId.canonicalName(), e.getMessage());
+        }
         return -1;
     }
 

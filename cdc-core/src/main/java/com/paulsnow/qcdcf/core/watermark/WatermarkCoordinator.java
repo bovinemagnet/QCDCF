@@ -34,4 +34,14 @@ public interface WatermarkCoordinator {
      * @return the closed window with the high watermark set
      */
     WatermarkWindow closeWindow(WatermarkWindow window);
+
+    /**
+     * Cancels an open window without reconciliation.
+     * <p>
+     * Used when a snapshot chunk fails mid-window. Discards buffered events
+     * and resets window state so a new window can be opened for retry.
+     *
+     * @param window the window to cancel
+     */
+    void cancelWindow(WatermarkWindow window);
 }

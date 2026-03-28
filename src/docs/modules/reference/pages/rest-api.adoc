@@ -1,0 +1,404 @@
+= REST API Reference
+Paul Snow
+:description: Complete reference for all REST endpoints exposed by the QCDCF runtime, including connector management, snapshot control, replication health, validation, and the HTMX dashboard.
+include::ROOT:partial$_attributes.adoc[]
+
+This page documents every REST endpoint exposed by the `{project-name}` runtime.
+All endpoints return `application/json` unless otherwise noted.
+The default base URL when running locally is `http://localhost:8080`.
+
+See xref:ROOT:getting-started.adoc[Getting Started] to bring up the runtime, and
+xref:operations:deployment.adoc[Deployment] for production configuration.
+
+== Connector Management
+
+Base path: `/api/connector`
+
+These endpoints query and control the lifecycle of the CDC connector, including pausing and resuming WAL capture and triggering table snapshots.
+
+=== GET /api/connector/status
+
+Returns the current connector identifier and operational status.
+
+[source,bash]
+----
+curl http://localhost:8080/api/connector/status
+----
+
+.Response
+[source,json]
+----
+{
+  "connectorId": "my-connector",
+  "status": "RUNNING"
+}
+----
+
+Possible `status` values: `RUNNING`, `PAUSED`, `STOPPED`, `ERROR`.
+
+=== POST /api/connector/pause
+
+Pauses the connector, stopping the WAL reader. The replication slot remains open; no WAL events are consumed while paused.
+
+[source,bash]
+----
+curl -X POST http://localhost:8080/api/connector/pause
+----
+
+.Response
+[source,json]
+----
+{
+  "connectorId": "my-connector",
+  "status": "PAUSED",
+  "message": "Connector paused"
+}
+----
+
+=== POST /api/connector/resume
+
+Resumes a paused connector, restarting the WAL reader from its last confirmed LSN.
+
+[source,bash]
+----
+curl -X POST http://localhost:8080/api/connector/resume
+----
+
+.Response
+[source,json]
+----
+{
+  "connectorId": "my-connector",
+  "status": "RUNNING",
+  "message": "Connector resumed"
+}
+----
+
+=== POST /api/connector/snapshot
+
+Triggers a watermark-based snapshot for the specified table.
+Accepts a JSON body, a URL-encoded form body, or a wildcard content type with a `tableName` field.
+
+[source,bash]
+----
+curl -X POST http://localhost:8080/api/connector/snapshot \
+     -H "Content-Type: application/json" \
+     -d '{"tableName": "public.orders"}'
+----
+
+.Request body fields
+[cols="1,1,3",options="header"]
+|===
+| Field | Type | Description
+| `tableName` | string | Fully-qualified table name (e.g. `public.orders`). Required.
+|===
+
+.Response
+[source,json]
+----
+{
+  "connectorId": "my-connector",
+  "tableName": "public.orders",
+  "status": "SNAPSHOT_TRIGGERED"
+}
+----
+
+=== GET /api/connector/progress
+
+Returns snapshot progress and general connector progress information.
+
+[source,bash]
+----
+curl http://localhost:8080/api/connector/progress
+----
+
+.Response
+[source,json]
+----
+{
+  "connectorId": "my-connector",
+  "snapshotInProgress": false,
+  "lastSnapshotTable": "public.orders",
+  "lastSnapshotStatus": "COMPLETED",
+  "eventsEmitted": 14203
+}
+----
+
+== Snapshot Control
+
+Base path: `/api/snapshots`
+
+A dedicated resource for snapshot operations, providing an explicit trigger endpoint and a status query independent of the connector resource.
+
+=== POST /api/snapshots/trigger
+
+Triggers a watermark-based snapshot for the specified table.
+Accepts a JSON body with a `tableName` field.
+
+[source,bash]
+----
+curl -X POST http://localhost:8080/api/snapshots/trigger \
+     -H "Content-Type: application/json" \
+     -d '{"tableName": "public.customers"}'
+----
+
+.Request body fields
+[cols="1,1,3",options="header"]
+|===
+| Field | Type | Description
+| `tableName` | string | Fully-qualified table name (e.g. `public.customers`). Required.
+|===
+
+.Response
+[source,json]
+----
+{
+  "connectorId": "my-connector",
+  "tableName": "public.customers",
+  "status": "SNAPSHOT_TRIGGERED"
+}
+----
+
+=== GET /api/snapshots/status
+
+Returns the current snapshot status, including the last table snapshotted and the outcome.
+
+[source,bash]
+----
+curl http://localhost:8080/api/snapshots/status
+----
+
+.Response
+[source,json]
+----
+{
+  "connectorId": "my-connector",
+  "lastSnapshotTable": "public.customers",
+  "lastSnapshotStatus": "COMPLETED"
+}
+----
+
+`lastSnapshotTable` is `N/A` when no snapshot has been triggered since startup.
+
+== Replication
+
+Base path: `/api/replication`
+
+Programmatic access to PostgreSQL replication slot health and WAL statistics.
+Use this endpoint to monitor replication lag and slot state from external tooling.
+
+=== GET /api/replication/health
+
+Returns replication slot health and general replication statistics as JSON.
+
+[source,bash]
+----
+curl http://localhost:8080/api/replication/health
+----
+
+.Response
+[source,json]
+----
+{
+  "slotHealth": {
+    "slotName": "qcdcf_slot",
+    "plugin": "pgoutput",
+    "slotType": "logical",
+    "active": true,
+    "confirmedFlushLsn": "0/1A3B4C5",
+    "restartLsn": "0/1A3B000",
+    "walLagBytes": 0,
+    "walLagFormatted": "0 B",
+    "catalogXmin": 742,
+    "highLag": false
+  },
+  "replicationStats": {
+    "walLevel": "logical",
+    "currentWalLsn": "0/1A3B4C5",
+    "maxReplicationSlots": 10,
+    "usedReplicationSlots": 1,
+    "maxWalSenders": 10,
+    "activeWalSenders": 1,
+    "walSegmentSize": 16777216
+  }
+}
+----
+
+`slotHealth` and `replicationStats` are `null` when the replication slot does not exist or the connection to PostgreSQL cannot be established.
+
+NOTE: `highLag` is `true` when WAL lag exceeds the configured threshold. Monitor this field to detect replication slot bloat, which can cause PostgreSQL disk pressure.
+
+== Validation
+
+Base path: `/api/cli`
+
+Validates that all PostgreSQL prerequisites for CDC are correctly configured.
+Run this endpoint after initial setup or after a configuration change to confirm the environment is ready.
+
+=== GET /api/cli/check
+
+Checks database connectivity, WAL level, replication slot existence, publication configuration, published table replica identity, and the watermark table. Returns a summary with pass/fail counts.
+
+[source,bash]
+----
+curl http://localhost:8080/api/cli/check
+----
+
+.Response
+[source,json]
+----
+{
+  "passed": 7,
+  "failed": 0,
+  "ready": true,
+  "checks": [
+    { "check": "Database connection",      "status": "OK" },
+    { "check": "WAL level",                "status": "OK" },
+    { "check": "Replication slot",         "status": "OK" },
+    { "check": "Publication",              "status": "OK" },
+    { "check": "Published tables",         "status": "OK", "count": "2" },
+    { "check": "Table public.orders",      "status": "OK", "pk": "id", "identity": "DEFAULT" },
+    { "check": "Table public.customers",   "status": "OK", "pk": "id", "identity": "DEFAULT" },
+    { "check": "Watermark table",          "status": "OK" }
+  ]
+}
+----
+
+.Response fields
+[cols="1,1,3",options="header"]
+|===
+| Field | Type | Description
+| `passed` | integer | Number of checks that passed.
+| `failed` | integer | Number of checks that failed.
+| `ready` | boolean | `true` when `failed` is zero.
+| `checks` | array | Ordered list of individual check results.
+|===
+
+Each element in `checks` contains a `check` name, a `status` (`OK`, `FAIL`, or `WARN`), and an optional `detail` field with the failure reason.
+
+IMPORTANT: A `ready: false` response means the CDC pipeline will not operate correctly. Resolve all `FAIL` entries before starting capture.
+
+== Health
+
+{project-name} exposes the standard Quarkus SmallRye Health endpoints.
+
+=== GET /q/health/live
+
+Liveness probe. Returns `UP` when the application process is running.
+
+[source,bash]
+----
+curl http://localhost:8080/q/health/live
+----
+
+.Response
+[source,json]
+----
+{
+  "status": "UP",
+  "checks": []
+}
+----
+
+=== GET /q/health/ready
+
+Readiness probe. Returns `UP` when the application is ready to serve traffic, including successful database connectivity.
+
+[source,bash]
+----
+curl http://localhost:8080/q/health/ready
+----
+
+.Response
+[source,json]
+----
+{
+  "status": "UP",
+  "checks": [
+    {
+      "name": "Database connections health check",
+      "status": "UP"
+    }
+  ]
+}
+----
+
+These endpoints are suitable for use as Kubernetes `livenessProbe` and `readinessProbe` targets.
+
+== Metrics
+
+=== GET /q/metrics
+
+Exposes Micrometer metrics in Prometheus exposition format.
+All {project-name}-specific metrics use the `qcdcf_` prefix.
+
+[source,bash]
+----
+curl http://localhost:8080/q/metrics
+----
+
+.Example output (excerpt)
+[source]
+----
+# HELP qcdcf_events_emitted_total Total number of change events emitted
+# TYPE qcdcf_events_emitted_total counter
+qcdcf_events_emitted_total 14203.0
+# HELP qcdcf_wal_lag_bytes Current WAL lag in bytes for the replication slot
+# TYPE qcdcf_wal_lag_bytes gauge
+qcdcf_wal_lag_bytes 0.0
+----
+
+== Dashboard
+
+Base path: `/dashboard`
+
+The HTMX operational dashboard serves server-rendered HTML pages and fragment endpoints.
+These endpoints return `text/html` rather than JSON and are intended for browser consumption.
+They are not suitable for programmatic API access.
+
+=== Main pages
+
+[cols="1,3",options="header"]
+|===
+| Path | Description
+| `GET /dashboard` | Main metrics overview with sparkline charts and connector status cards.
+| `GET /dashboard/history` | Event history page with insert, update, delete, and error sparklines.
+| `GET /dashboard/snapshots` | Snapshot management page with active snapshot state and watermark windows.
+| `GET /dashboard/replication` | Replication health page with slot detail and configuration panels.
+| `GET /dashboard/operations` | Operations summary page with health, resilience, validation, and config panels.
+|===
+
+=== HTMX fragment endpoints
+
+The following paths return partial HTML fragments polled by the dashboard via HTMX.
+They are not intended for direct use.
+
+[cols="1,3",options="header"]
+|===
+| Path | Description
+| `GET /dashboard/fragments/status` | Connector status badge fragment.
+| `GET /dashboard/fragments/metrics` | Metrics cards with sparklines.
+| `GET /dashboard/fragments/recent-events` | Recent events list fragment.
+| `GET /dashboard/fragments/breakdown` | Event type breakdown fragment.
+| `GET /dashboard/fragments/errors` | Recent errors fragment.
+| `GET /dashboard/fragments/tables` | Monitored tables fragment.
+| `GET /dashboard/fragments/history-events` | Total events sparkline history.
+| `GET /dashboard/fragments/history-inserts` | Inserts sparkline history.
+| `GET /dashboard/fragments/history-updates` | Updates sparkline history.
+| `GET /dashboard/fragments/history-deletes` | Deletes sparkline history.
+| `GET /dashboard/fragments/history-errors` | Errors sparkline history.
+| `GET /dashboard/fragments/history-table` | Tabular event history.
+| `GET /dashboard/fragments/snapshot-active` | Active snapshot state panel.
+| `GET /dashboard/fragments/watermark-windows` | Watermark window status.
+| `GET /dashboard/fragments/watermark-wal` | WAL events within watermark windows.
+| `GET /dashboard/fragments/snapshot-history` | Snapshot history table.
+| `GET /dashboard/fragments/replication-health` | Replication health panel.
+| `GET /dashboard/fragments/replication-slot` | Replication slot detail panel.
+| `GET /dashboard/fragments/replication-config` | Replication configuration panel.
+| `GET /dashboard/fragments/replication-danger` | Replication danger zone panel.
+| `GET /dashboard/fragments/ops-summary` | Operations summary panel.
+| `GET /dashboard/fragments/ops-health` | Operations health panel.
+| `GET /dashboard/fragments/ops-resilience` | Operations resilience panel.
+| `GET /dashboard/fragments/ops-validation` | Operations validation panel.
+| `GET /dashboard/fragments/ops-config` | Operations configuration panel.
+|===

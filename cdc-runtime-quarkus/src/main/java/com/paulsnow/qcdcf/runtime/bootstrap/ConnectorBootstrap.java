@@ -12,6 +12,7 @@ import com.paulsnow.qcdcf.postgres.replication.PostgresLogicalReplicationClient;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import com.paulsnow.qcdcf.runtime.service.ConnectorValidator;
 import com.paulsnow.qcdcf.runtime.service.MetricsService;
+import com.paulsnow.qcdcf.runtime.service.ResilientCheckpointRepository;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -71,6 +72,7 @@ public class ConnectorBootstrap {
     private volatile ConnectorStatus status = ConnectorStatus.STOPPED;
     private volatile Instant lastSuccessfulConnection;
     private PostgresLogStreamReader reader;
+    private ResilientCheckpointRepository resilientCheckpoint;
 
     public ConnectorBootstrap(ConnectorRuntimeConfig config) {
         this.config = config;
@@ -202,6 +204,20 @@ public class ConnectorBootstrap {
             return "\n  → Fix: Check quarkus.datasource.jdbc.url and ensure PostgreSQL is running";
         }
         return "";
+    }
+
+    /**
+     * Returns {@code true} if the checkpoint circuit breaker is currently open (within 30s cooldown).
+     */
+    public boolean isCheckpointCircuitOpen() {
+        return resilientCheckpoint != null && resilientCheckpoint.isCircuitOpen(30);
+    }
+
+    /**
+     * Returns the number of consecutive checkpoint save failures, or 0 if no resilient checkpoint is configured.
+     */
+    public int checkpointConsecutiveFailures() {
+        return resilientCheckpoint != null ? resilientCheckpoint.consecutiveFailures() : 0;
     }
 
     void onStop(@Observes ShutdownEvent event) {

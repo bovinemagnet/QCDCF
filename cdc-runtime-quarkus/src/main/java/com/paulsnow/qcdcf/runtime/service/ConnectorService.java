@@ -224,6 +224,21 @@ public class ConnectorService {
         return snapshotState.get().status();
     }
 
+    /**
+     * Return the instant of the last successful WAL connection, or {@code null} if never connected.
+     */
+    public Instant lastSuccessfulConnection() { return bootstrap.lastSuccessfulConnection(); }
+
+    /**
+     * Return {@code true} if the checkpoint circuit breaker is currently open.
+     */
+    public boolean isCheckpointCircuitOpen() { return bootstrap.isCheckpointCircuitOpen(); }
+
+    /**
+     * Return the number of consecutive checkpoint save failures.
+     */
+    public int checkpointConsecutiveFailures() { return bootstrap.checkpointConsecutiveFailures(); }
+
     private static String formatDuration(Duration duration) {
         long hours = duration.toHours();
         long minutes = duration.toMinutesPart();

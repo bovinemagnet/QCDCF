@@ -38,9 +38,9 @@ public class PostgresLogStreamReader {
     private final String connectorId;
 
     private volatile boolean running;
-    private long lastProcessedLsn;
-    private Long currentTxId;
-    private Instant lastCommitTimestamp;
+    private volatile long lastProcessedLsn;
+    private volatile Long currentTxId;
+    private volatile Instant lastCommitTimestamp;
 
     /**
      * Creates a new log stream reader wiring all pipeline components.

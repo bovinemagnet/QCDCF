@@ -5,6 +5,7 @@ import com.paulsnow.qcdcf.postgres.metadata.PostgresTableMetadataReader;
 import com.paulsnow.qcdcf.postgres.metadata.TableMetadata;
 import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import com.paulsnow.qcdcf.runtime.service.ConnectorService;
+import com.paulsnow.qcdcf.runtime.service.ConnectorValidator;
 import com.paulsnow.qcdcf.runtime.service.MetricsService;
 import com.paulsnow.qcdcf.runtime.service.ReplicationHealthService;
 import com.paulsnow.qcdcf.runtime.service.SnapshotMonitorService;
@@ -131,6 +132,29 @@ public class DashboardResource {
     Template replicationDangerFragment;
 
     @Inject
+    Template operations;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/operationsSummary")
+    Template operationsSummaryFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/operationsHealth")
+    Template operationsHealthFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/operationsResilience")
+    Template operationsResilienceFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/operationsValidation")
+    Template operationsValidationFragment;
+
+    @Inject
+    @io.quarkus.qute.Location("fragments/operationsConfig")
+    Template operationsConfigFragment;
+
+    @Inject
     ConnectorService connectorService;
 
     @Inject
@@ -141,6 +165,9 @@ public class DashboardResource {
 
     @Inject
     ReplicationHealthService replicationHealthService;
+
+    @Inject
+    ConnectorValidator validator;
 
     @Inject
     ConnectorRuntimeConfig config;
@@ -428,6 +455,68 @@ public class DashboardResource {
         return buildReplicationDangerData(replicationDangerFragment);
     }
 
+    // ── Operations page + fragments ────────────────────────────────────
+
+    /**
+     * Operations monitoring page — health, resilience, validation, and configuration.
+     */
+    @GET
+    @Path("/operations")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance operationsPage() {
+        return buildOpsSummaryData(operations);
+    }
+
+    /**
+     * Operations summary cards fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/ops-summary")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance opsSummaryFragment() {
+        return buildOpsSummaryData(operationsSummaryFragment);
+    }
+
+    /**
+     * Operations health detail fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/ops-health")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance opsHealthFragment() {
+        return buildOpsHealthData(operationsHealthFragment);
+    }
+
+    /**
+     * Operations resilience metrics fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/ops-resilience")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance opsResilienceFragment() {
+        return buildOpsResilienceData(operationsResilienceFragment);
+    }
+
+    /**
+     * Operations validation checks fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/ops-validation")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance opsValidationFragment() {
+        return buildOpsValidationData(operationsValidationFragment);
+    }
+
+    /**
+     * Operations configuration fragment for HTMX polling.
+     */
+    @GET
+    @Path("/fragments/ops-config")
+    @Produces(MediaType.TEXT_HTML)
+    public TemplateInstance opsConfigFragment() {
+        return buildOpsConfigData(operationsConfigFragment);
+    }
+
     // ── Private helpers ─────────────────────────────────────────────────
 
     /**
@@ -661,5 +750,125 @@ public class DashboardResource {
                 .data("slotHealth", slotHealth)
                 .data("highLag", ReplicationHealthService.isHighLag(lagBytes))
                 .data("slotName", config.source().slotName());
+    }
+
+    /**
+     * Builds summary card data for the operations page.
+     */
+    private TemplateInstance buildOpsSummaryData(Template template) {
+        String status = connectorService.status().name();
+        boolean isFailed = "FAILED".equals(status);
+        boolean isRunning = "RUNNING".equals(status) || "SNAPSHOTTING".equals(status);
+        String healthStatus = isFailed ? "DOWN" : isRunning ? "ALL UP" : "DEGRADED";
+        String healthColour = isFailed ? "text-red-400" : isRunning ? "text-emerald-400" : "text-yellow-400";
+
+        long totalRetries = metricsService.walReconnectAttempts()
+                + metricsService.sinkPublishRetries()
+                + metricsService.snapshotChunkRetries();
+        String retriesColour = totalRetries == 0 ? "text-emerald-400"
+                : totalRetries > 50 ? "text-red-400" : "text-yellow-400";
+
+        boolean cbOpen = connectorService.isCheckpointCircuitOpen();
+        String cbStatus = cbOpen ? "OPEN" : "CLOSED";
+        String cbColour = cbOpen ? "text-red-400" : "text-emerald-400";
+
+        return template
+                .data("healthStatus", healthStatus)
+                .data("healthColour", healthColour)
+                .data("totalRetries", totalRetries)
+                .data("retriesColour", retriesColour)
+                .data("cbStatus", cbStatus)
+                .data("cbColour", cbColour);
+    }
+
+    /**
+     * Builds health detail data for the operations health fragment.
+     */
+    private TemplateInstance buildOpsHealthData(Template template) {
+        String status = connectorService.status().name();
+        boolean isRunning = "RUNNING".equals(status) || "SNAPSHOTTING".equals(status);
+        boolean isFailed = "FAILED".equals(status);
+        String sourceColour = isFailed ? "text-red-400" : isRunning ? "text-emerald-400" : "text-yellow-400";
+
+        java.time.Instant lastConn = connectorService.lastSuccessfulConnection();
+        String lastConnection = lastConn != null ? lastConn.toString() : "never";
+
+        boolean livenessUp = !isFailed;
+        String livenessColour = livenessUp ? "text-emerald-400" : "text-red-400";
+
+        return template
+                .data("sourceStatus", status)
+                .data("sourceColour", sourceColour)
+                .data("lastConnection", lastConnection)
+                .data("sinkType", config.sink().type())
+                .data("livenessStatus", livenessUp ? "UP" : "DOWN")
+                .data("livenessColour", livenessColour);
+    }
+
+    /**
+     * Builds resilience metrics data for the operations resilience fragment.
+     */
+    private TemplateInstance buildOpsResilienceData(Template template) {
+        int cbFailures = connectorService.checkpointConsecutiveFailures();
+        String cbFailColour = cbFailures > 0 ? "text-yellow-400" : "text-emerald-400";
+
+        return template
+                .data("walReconnects", metricsService.walReconnectAttempts())
+                .data("sinkRetries", metricsService.sinkPublishRetries())
+                .data("snapshotRetries", metricsService.snapshotChunkRetries())
+                .data("cbFailures", cbFailures)
+                .data("cbFailColour", cbFailColour);
+    }
+
+    /**
+     * Builds validation check data for the operations validation fragment.
+     */
+    private TemplateInstance buildOpsValidationData(Template template) {
+        var checks = new java.util.ArrayList<java.util.Map<String, String>>();
+        String validationError = null;
+
+        try (Connection conn = dataSource.getConnection()) {
+            for (var result : validator.validateWalLevel(conn)) {
+                checks.add(java.util.Map.of("name", result.get("check"), "status", result.get("status")));
+            }
+            for (var result : validator.validateSlot(conn, config.source().slotName())) {
+                checks.add(java.util.Map.of("name", result.get("check"), "status", result.get("status")));
+            }
+            for (var result : validator.validatePublication(conn, config.source().publicationName())) {
+                checks.add(java.util.Map.of("name", result.get("check"), "status", result.get("status")));
+            }
+            for (var result : validator.validateWatermarkTable(conn)) {
+                checks.add(java.util.Map.of("name", result.get("check"), "status", result.get("status")));
+            }
+        } catch (Exception e) {
+            validationError = "Database unreachable: " + e.getMessage();
+            LOG.warnf("Validation fragment failed: %s", e.getMessage());
+        }
+
+        return template
+                .data("checks", checks)
+                .data("validationError", validationError);
+    }
+
+    /**
+     * Builds configuration data for the operations config fragment.
+     */
+    private TemplateInstance buildOpsConfigData(Template template) {
+        var r = config.resilience();
+        var h = config.health();
+        return template
+                .data("walRetryDelay", r.walRetry().delay())
+                .data("walRetryMaxDelay", r.walRetry().maxDelay())
+                .data("walRetryJitter", r.walRetry().jitter())
+                .data("sinkMaxRetries", r.sinkRetry().maxRetries())
+                .data("sinkDelay", r.sinkRetry().delay())
+                .data("sinkTimeout", r.sinkRetry().timeout())
+                .data("snapshotMaxRetries", r.snapshotRetry().maxRetries())
+                .data("snapshotDelay", r.snapshotRetry().delay())
+                .data("cbThreshold", r.checkpointCb().failureThreshold())
+                .data("cbWindow", r.checkpointCb().window())
+                .data("cbHalfOpenDelay", r.checkpointCb().halfOpenDelay())
+                .data("sustainedFailureThreshold", h.sustainedFailureThreshold())
+                .data("bufferMaxSize", config.snapshot().maxBufferSize());
     }
 }

@@ -60,6 +60,9 @@ public class ConnectorService {
     DataSource dataSource;
 
     @Inject
+    SnapshotMonitorService snapshotMonitor;
+
+    @Inject
     ManagedExecutor executor;
 
     private final Instant startTime = Instant.now();
@@ -131,14 +134,21 @@ public class ConnectorService {
     }
 
     private void executeSnapshot(TableId tableId) {
+        snapshotMonitor.recordSnapshotStarted(tableId.canonicalName());
         try {
             long rows = executeSnapshotWithRetry(tableId);
             snapshotState.set(new SnapshotState(tableId.canonicalName(), "COMPLETE (" + rows + " rows)", rows));
+            snapshotMonitor.recordSnapshotCompleted(tableId.canonicalName(), rows);
             LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
         } catch (Exception e) {
             snapshotState.set(new SnapshotState(snapshotState.get().table(), "FAILED: " + e.getMessage(), 0));
+            snapshotMonitor.recordSnapshotFailed(tableId.canonicalName(), e.getMessage());
             LOG.errorf(e, "Snapshot failed for %s after retries", tableId);
         }
+    }
+
+    public boolean isSnapshotRunning() {
+        return "RUNNING".equals(snapshotState.get().status());
     }
 
     @Retry(maxRetries = 3, delay = 2000, retryOn = {SourceReadException.class, SQLException.class})

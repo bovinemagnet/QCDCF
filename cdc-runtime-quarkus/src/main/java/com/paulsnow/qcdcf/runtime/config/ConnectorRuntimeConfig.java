@@ -104,6 +104,16 @@ public interface ConnectorRuntimeConfig {
     interface SnapshotConfig {
         @WithDefault("100000")
         int maxBufferSize();
+
+        ScheduleConfig schedule();
+
+        interface ScheduleConfig {
+            @WithDefault("false")
+            boolean enabled();
+
+            @WithDefault("0 0 2 * * ?")
+            String cron();
+        }
     }
 
     interface SinkConfig {

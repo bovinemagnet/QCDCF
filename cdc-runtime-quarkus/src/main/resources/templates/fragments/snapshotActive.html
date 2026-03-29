@@ -29,6 +29,18 @@
 <p class="text-gray-500 text-sm italic">No active snapshot.</p>
 {/if}
 
+<!-- Schedule Status -->
+<div class="mt-4 pt-4 border-t border-gray-700">
+    <div class="flex justify-between items-centre">
+        <span class="text-gray-400">Schedule</span>
+        {#if scheduleEnabled}
+        <span class="font-mono text-sm text-emerald-400">{scheduleCron}</span>
+        {#else}
+        <span class="font-mono text-sm text-gray-500">Disabled</span>
+        {/if}
+    </div>
+</div>
+
 <!-- Snapshot trigger form -->
 <div class="mt-6 pt-4 border-t border-gray-700">
     <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">Trigger Snapshot</h3>

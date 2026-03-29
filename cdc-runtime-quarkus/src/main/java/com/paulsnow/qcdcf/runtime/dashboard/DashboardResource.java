@@ -220,7 +220,9 @@ public class DashboardResource {
                 .data("completedWindows", snapshotMonitorService.completedWindows())
                 .data("recentWatermarkEvents", snapshotMonitorService.recentWatermarkEvents())
                 .data("totalWatermarkEvents", snapshotMonitorService.totalWatermarkEventsDetected())
-                .data("snapshotHistory", snapshotMonitorService.snapshotHistory());
+                .data("snapshotHistory", snapshotMonitorService.snapshotHistory())
+                .data("scheduleEnabled", config.snapshot().schedule().enabled())
+                .data("scheduleCron", config.snapshot().schedule().cron());
     }
 
     // ── Fragment endpoints (HTMX polling) ───────────────────────────────
@@ -365,7 +367,9 @@ public class DashboardResource {
     @Produces(MediaType.TEXT_HTML)
     public TemplateInstance snapshotActiveFragment() {
         return snapshotActiveFragment
-                .data("activeSnapshot", snapshotMonitorService.activeSnapshot());
+                .data("activeSnapshot", snapshotMonitorService.activeSnapshot())
+                .data("scheduleEnabled", config.snapshot().schedule().enabled())
+                .data("scheduleCron", config.snapshot().schedule().cron());
     }
 
     /**

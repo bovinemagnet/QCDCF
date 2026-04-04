@@ -7,6 +7,9 @@ import com.paulsnow.qcdcf.runtime.kafka.EventSerializer;
 import com.paulsnow.qcdcf.runtime.kafka.KafkaEventSink;
 import com.paulsnow.qcdcf.runtime.kafka.PartitionKeyStrategy;
 import com.paulsnow.qcdcf.runtime.kafka.TopicRouter;
+import com.paulsnow.qcdcf.runtime.rabbitmq.ExchangeRouter;
+import com.paulsnow.qcdcf.runtime.rabbitmq.RabbitMQEventSink;
+import com.rabbitmq.client.ConnectionFactory;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
@@ -22,7 +25,7 @@ import java.util.Properties;
  * CDI producer for the {@link EventSink} used by the publish stage of the pipeline.
  * <p>
  * Selects the sink implementation based on {@link ConnectorRuntimeConfig.SinkConfig#type()}.
- * Supported values are {@code logging} (default) and {@code kafka}.
+ * Supported values are {@code logging} (default), {@code kafka}, and {@code rabbitmq}.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -43,6 +46,7 @@ public class EventSinkProducer {
         String sinkType = config.sink().type();
         EventSink sink = switch (sinkType) {
             case "kafka" -> createKafkaSink();
+            case "rabbitmq" -> createRabbitMQSink();
             case "logging" -> {
                 LOG.info("Using LoggingEventSink");
                 yield new LoggingEventSink();
@@ -79,6 +83,25 @@ public class EventSinkProducer {
         if (delay.endsWith("ms")) return Long.parseLong(delay.replace("ms", ""));
         if (delay.endsWith("s")) return (long) (Double.parseDouble(delay.replace("s", "")) * 1000);
         return Long.parseLong(delay);
+    }
+
+    private RabbitMQEventSink createRabbitMQSink() {
+        var rmqConfig = config.sink().rabbitmq();
+        LOG.info("Using RabbitMQEventSink with host: {}:{}", rmqConfig.host(), rmqConfig.port());
+        try {
+            ConnectionFactory factory = new ConnectionFactory();
+            factory.setHost(rmqConfig.host());
+            factory.setPort(rmqConfig.port());
+            factory.setUsername(rmqConfig.username());
+            factory.setPassword(rmqConfig.password());
+            factory.setVirtualHost(rmqConfig.virtualHost());
+            var connection = factory.newConnection();
+            var channel = connection.createChannel();
+            return new RabbitMQEventSink(channel, new ExchangeRouter(rmqConfig.exchangeName()),
+                    new EventSerializer(), rmqConfig.exchangeType());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to create RabbitMQ connection: " + e.getMessage(), e);
+        }
     }
 
     private KafkaEventSink createKafkaSink() {

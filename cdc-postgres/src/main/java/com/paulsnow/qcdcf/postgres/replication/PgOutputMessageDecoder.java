@@ -87,7 +87,7 @@ public class PgOutputMessageDecoder {
         return new DecodedReplicationMessage(
                 DecodedReplicationMessage.MessageType.BEGIN,
                 finalLsn,
-                (long) xid,
+                Integer.toUnsignedLong(xid),
                 pgTimestampToInstant(pgTimestamp),
                 null, null, null, null, null
         );

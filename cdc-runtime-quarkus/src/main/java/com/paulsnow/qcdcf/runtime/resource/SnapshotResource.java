@@ -35,7 +35,10 @@ public class SnapshotResource {
     @Path("/trigger")
     @Consumes(MediaType.APPLICATION_JSON)
     public Map<String, Object> trigger(Map<String, String> body) {
-        String tableName = body != null ? body.getOrDefault("tableName", "unknown") : "unknown";
+        String tableName = body != null ? body.get("tableName") : null;
+        if (tableName == null || tableName.isBlank()) {
+            throw new jakarta.ws.rs.BadRequestException("Request body must include a 'tableName' field");
+        }
         return connectorService.triggerSnapshot(tableName);
     }
 

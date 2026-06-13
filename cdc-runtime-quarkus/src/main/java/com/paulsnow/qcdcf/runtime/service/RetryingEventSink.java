@@ -27,7 +27,8 @@ public class RetryingEventSink implements EventSink {
 
     public RetryingEventSink(EventSink delegate, int maxRetries, long initialDelayMs) {
         this.delegate = delegate;
-        this.maxRetries = maxRetries;
+        // At least one attempt must always run, otherwise publish() would return null
+        this.maxRetries = Math.max(1, maxRetries);
         this.initialDelayMs = initialDelayMs;
     }
 
@@ -63,6 +64,11 @@ public class RetryingEventSink implements EventSink {
             }
         }
         return result;
+    }
+
+    @Override
+    public void close() throws Exception {
+        delegate.close();
     }
 
     private void sleepWithBackoff(int attempt) {

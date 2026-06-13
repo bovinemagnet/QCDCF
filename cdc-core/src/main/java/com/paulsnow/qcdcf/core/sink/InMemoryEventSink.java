@@ -14,7 +14,7 @@ import java.util.List;
  */
 public class InMemoryEventSink implements EventSink {
 
-    private final List<ChangeEnvelope> events = new ArrayList<>();
+    private final List<ChangeEnvelope> events = Collections.synchronizedList(new ArrayList<>());
 
     @Override
     public PublishResult publish(ChangeEnvelope event) {
@@ -28,9 +28,11 @@ public class InMemoryEventSink implements EventSink {
         return new PublishResult.Success(batch.size());
     }
 
-    /** Returns an unmodifiable view of all captured events. */
+    /** Returns a snapshot of all captured events. */
     public List<ChangeEnvelope> events() {
-        return Collections.unmodifiableList(events);
+        synchronized (events) {
+            return List.copyOf(events);
+        }
     }
 
     /** Clears all captured events. */

@@ -27,7 +27,8 @@ public class PostgresTableMetadataReader {
 
     private static final Logger LOG = LoggerFactory.getLogger(PostgresTableMetadataReader.class);
 
-    // Discover primary key columns in definition order
+    // Discover primary key columns in index key order (array_position over indkey,
+    // not attnum — PRIMARY KEY (b, a) must keep that order for keyset pagination)
     private static final String PRIMARY_KEY_SQL = """
             SELECT a.attname AS column_name, a.attnum AS ordinal_position
             FROM pg_index i
@@ -36,7 +37,7 @@ public class PostgresTableMetadataReader {
             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
             WHERE i.indisprimary
               AND n.nspname = ? AND c.relname = ?
-            ORDER BY a.attnum
+            ORDER BY array_position(i.indkey::int2[], a.attnum)
             """;
 
     // Read all column metadata from pg_attribute

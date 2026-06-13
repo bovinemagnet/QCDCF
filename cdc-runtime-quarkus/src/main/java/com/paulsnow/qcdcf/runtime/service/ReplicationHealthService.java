@@ -4,6 +4,7 @@ import com.paulsnow.qcdcf.runtime.config.ConnectorRuntimeConfig;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -28,6 +29,8 @@ import java.util.concurrent.ConcurrentLinkedDeque;
  */
 @ApplicationScoped
 public class ReplicationHealthService {
+
+    private static final Logger LOG = Logger.getLogger(ReplicationHealthService.class);
 
     @Inject
     DataSource dataSource;
@@ -129,7 +132,7 @@ public class ReplicationHealthService {
                 }
             }
         } catch (Exception e) {
-            // Database unavailable — return null
+            LOG.warnf("Failed to query replication slot health: %s", e.getMessage());
         }
         return null;
     }

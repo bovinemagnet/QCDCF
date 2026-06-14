@@ -13,7 +13,6 @@ import jakarta.ws.rs.core.MediaType;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.ResultSet;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -75,11 +74,14 @@ public class TablesCommand {
     }
 
     private long countRows(Connection conn, TableId tableId) {
-        try (Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(
-                     "SELECT reltuples::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
-                     "WHERE n.nspname = '" + tableId.schema() + "' AND c.relname = '" + tableId.table() + "'")) {
-            if (rs.next()) return Math.max(0, rs.getLong(1));
+        try (var stmt = conn.prepareStatement(
+                "SELECT reltuples::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+                "WHERE n.nspname = ? AND c.relname = ?")) {
+            stmt.setString(1, tableId.schema());
+            stmt.setString(2, tableId.table());
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) return Math.max(0, rs.getLong(1));
+            }
         } catch (Exception ignored) {}
         return -1;
     }

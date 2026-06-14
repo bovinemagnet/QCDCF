@@ -39,6 +39,13 @@ public class PostgresLogicalReplicationClient implements AutoCloseable {
      */
     private static final long POLL_INTERVAL_MS = 10;
 
+    /**
+     * Interval in milliseconds between standby status updates sent while idle.
+     * Must be well below the server's {@code wal_sender_timeout} (default 60s),
+     * otherwise the server terminates the replication connection.
+     */
+    private static final long STATUS_UPDATE_INTERVAL_MS = 10_000;
+
     private final String jdbcUrl;
     private final String username;
     private final String password;
@@ -254,10 +261,17 @@ public class PostgresLogicalReplicationClient implements AutoCloseable {
     }
 
     private void readLoop(RawReplicationMessageHandler handler) throws SQLException, InterruptedException {
+        long lastStatusUpdate = System.currentTimeMillis();
         while (running) {
             ByteBuffer msg = stream.readPending();
 
             if (msg == null) {
+                long now = System.currentTimeMillis();
+                if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL_MS) {
+                    stream.forceUpdateStatus();
+                    lastStatusUpdate = now;
+                    LOG.trace("Sent idle keepalive status update for slot '{}'", slotName);
+                }
                 Thread.sleep(POLL_INTERVAL_MS);
                 continue;
             }

@@ -79,7 +79,7 @@ public class EventSinkProducer {
     }
 
     private static long parseDelayMs(String delay) {
-        delay = delay.trim().toLowerCase();
+        delay = delay.trim().toLowerCase(java.util.Locale.ROOT);
         if (delay.endsWith("ms")) return Long.parseLong(delay.replace("ms", ""));
         if (delay.endsWith("s")) return (long) (Double.parseDouble(delay.replace("s", "")) * 1000);
         return Long.parseLong(delay);

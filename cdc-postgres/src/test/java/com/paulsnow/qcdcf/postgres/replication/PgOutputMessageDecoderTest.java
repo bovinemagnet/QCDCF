@@ -57,6 +57,26 @@ class PgOutputMessageDecoderTest {
         assertThat(msg.operation()).isNull();
     }
 
+    @Test
+    void decodesBeginMessageWithXidAboveSignedIntRange() {
+        long finalLsn = 0x0000_0001_0000_00A0L;
+        long pgTimestamp = 750_000_000_000_000L;
+        int xid = (int) 2_147_483_648L; // 0x80000000 — negative as a signed int
+
+        ByteBuffer buf = ByteBuffer.allocate(1 + 8 + 8 + 4);
+        buf.put((byte) 'B');
+        buf.putLong(finalLsn);
+        buf.putLong(pgTimestamp);
+        buf.putInt(xid);
+        buf.flip();
+
+        RawReplicationMessage raw = new RawReplicationMessage(100L, Instant.now(), buf);
+        DecodedReplicationMessage msg = decoder.decode(raw);
+
+        assertThat(msg).isNotNull();
+        assertThat(msg.txId()).isEqualTo(2_147_483_648L);
+    }
+
     // ---- Commit message ----
 
     @Test

@@ -14,7 +14,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * Maintains ring buffers for snapshot job history, watermark windows,
  * and watermark events detected in the WAL stream. All operations are
- * thread-safe via concurrent collections and atomic primitives.
+ * thread-safe: snapshot history is guarded by a lock (records are
+ * replaced in place, which needs atomicity), the rest use concurrent
+ * collections and atomic primitives.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -24,7 +26,7 @@ public class SnapshotMonitorService {
 
     /* ── Snapshot job tracking ───────────────────────────────────────── */
 
-    private final Deque<SnapshotJobRecord> snapshotHistory = new ConcurrentLinkedDeque<>();
+    private final Deque<SnapshotJobRecord> snapshotHistory = new ArrayDeque<>();
     private static final int MAX_HISTORY = 20;
 
     /* ── Watermark window tracking ───────────────────────────────────── */
@@ -147,9 +149,11 @@ public class SnapshotMonitorService {
      * @param tableName the table being snapshotted
      */
     public void recordSnapshotStarted(String tableName) {
-        snapshotHistory.addFirst(new SnapshotJobRecord(
-                Instant.now(), tableName, "RUNNING", 0, 0, null));
-        trimDeque(snapshotHistory, MAX_HISTORY);
+        synchronized (snapshotHistory) {
+            snapshotHistory.addFirst(new SnapshotJobRecord(
+                    Instant.now(), tableName, "RUNNING", 0, 0, null));
+            trimDeque(snapshotHistory, MAX_HISTORY);
+        }
     }
 
     /**
@@ -239,17 +243,21 @@ public class SnapshotMonitorService {
 
     /** Returns the snapshot job history, newest first. */
     public List<SnapshotJobRecord> snapshotHistory() {
-        return List.copyOf(snapshotHistory);
+        synchronized (snapshotHistory) {
+            return List.copyOf(snapshotHistory);
+        }
     }
 
     /** Returns the currently active snapshot job, or {@code null} if none. */
     public SnapshotJobRecord activeSnapshot() {
-        for (SnapshotJobRecord rec : snapshotHistory) {
-            if ("RUNNING".equals(rec.status())) {
-                return rec;
+        synchronized (snapshotHistory) {
+            for (SnapshotJobRecord rec : snapshotHistory) {
+                if ("RUNNING".equals(rec.status())) {
+                    return rec;
+                }
             }
+            return null;
         }
-        return null;
     }
 
     /** Returns the currently active watermark windows. */
@@ -277,25 +285,25 @@ public class SnapshotMonitorService {
     private void replaceLatestSnapshot(String tableName,
                                        java.util.function.UnaryOperator<SnapshotJobRecord> updater) {
         // Find and replace the latest RUNNING record for this table
-        var iterator = snapshotHistory.iterator();
-        Deque<SnapshotJobRecord> temp = new ArrayDeque<>();
-        boolean replaced = false;
-        while (iterator.hasNext()) {
-            SnapshotJobRecord rec = iterator.next();
-            if (!replaced && rec.tableName().equals(tableName) && "RUNNING".equals(rec.status())) {
-                temp.addLast(updater.apply(rec));
-                replaced = true;
-            } else {
-                temp.addLast(rec);
+        synchronized (snapshotHistory) {
+            Deque<SnapshotJobRecord> temp = new ArrayDeque<>();
+            boolean replaced = false;
+            for (SnapshotJobRecord rec : snapshotHistory) {
+                if (!replaced && rec.tableName().equals(tableName) && "RUNNING".equals(rec.status())) {
+                    temp.addLast(updater.apply(rec));
+                    replaced = true;
+                } else {
+                    temp.addLast(rec);
+                }
             }
+            if (!replaced) {
+                // No running record found — create one
+                temp.addFirst(updater.apply(new SnapshotJobRecord(
+                        Instant.now(), tableName, "RUNNING", 0, 0, null)));
+            }
+            snapshotHistory.clear();
+            snapshotHistory.addAll(temp);
         }
-        if (!replaced) {
-            // No running record found — create one
-            temp.addFirst(updater.apply(new SnapshotJobRecord(
-                    Instant.now(), tableName, "RUNNING", 0, 0, null)));
-        }
-        snapshotHistory.clear();
-        snapshotHistory.addAll(temp);
     }
 
     private static <T> void trimDeque(Deque<T> deque, int maxSize) {

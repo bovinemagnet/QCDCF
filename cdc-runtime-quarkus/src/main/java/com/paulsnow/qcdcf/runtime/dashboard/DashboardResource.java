@@ -214,15 +214,13 @@ public class DashboardResource {
     @Path("/snapshots")
     @Produces(MediaType.TEXT_HTML)
     public TemplateInstance snapshotsPage() {
-        return snapshots
+        return withScheduleData(snapshots
                 .data("activeSnapshot", snapshotMonitorService.activeSnapshot())
                 .data("activeWindows", snapshotMonitorService.activeWindows())
                 .data("completedWindows", snapshotMonitorService.completedWindows())
                 .data("recentWatermarkEvents", snapshotMonitorService.recentWatermarkEvents())
                 .data("totalWatermarkEvents", snapshotMonitorService.totalWatermarkEventsDetected())
-                .data("snapshotHistory", snapshotMonitorService.snapshotHistory())
-                .data("scheduleEnabled", config.snapshot().schedule().enabled())
-                .data("scheduleCron", config.snapshot().schedule().cron());
+                .data("snapshotHistory", snapshotMonitorService.snapshotHistory()));
     }
 
     // ── Fragment endpoints (HTMX polling) ───────────────────────────────
@@ -366,10 +364,8 @@ public class DashboardResource {
     @Path("/fragments/snapshot-active")
     @Produces(MediaType.TEXT_HTML)
     public TemplateInstance snapshotActiveFragment() {
-        return snapshotActiveFragment
-                .data("activeSnapshot", snapshotMonitorService.activeSnapshot())
-                .data("scheduleEnabled", config.snapshot().schedule().enabled())
-                .data("scheduleCron", config.snapshot().schedule().cron());
+        return withScheduleData(snapshotActiveFragment
+                .data("activeSnapshot", snapshotMonitorService.activeSnapshot()));
     }
 
     /**
@@ -569,6 +565,12 @@ public class DashboardResource {
                 .data("recentEvents", metricsService.recentEvents())
                 // Errors
                 .data("recentErrors", metricsService.recentErrors());
+    }
+
+    private TemplateInstance withScheduleData(TemplateInstance instance) {
+        return instance
+                .data("scheduleEnabled", config.snapshot().schedule().enabled())
+                .data("scheduleCron", config.snapshot().schedule().cron());
     }
 
     private TemplateInstance buildStatusData(Template template) {

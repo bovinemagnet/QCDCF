@@ -41,6 +41,7 @@ public class PostgresLogStreamReader {
     private volatile long lastProcessedLsn;
     private volatile Long currentTxId;
     private volatile Instant lastCommitTimestamp;
+    private volatile boolean txPublishFailed;
 
     /**
      * Creates a new log stream reader wiring all pipeline components.
@@ -116,7 +117,8 @@ public class PostgresLogStreamReader {
         return running;
     }
 
-    private void handleRawMessage(RawReplicationMessage raw) {
+    // package-private for unit testing
+    void handleRawMessage(RawReplicationMessage raw) {
         DecodedReplicationMessage decoded = decoder.decode(raw);
         if (decoded == null) {
             return;  // unrecognised or relation metadata message
@@ -125,13 +127,19 @@ public class PostgresLogStreamReader {
         switch (decoded.type()) {
             case BEGIN -> {
                 currentTxId = decoded.txId();
+                txPublishFailed = false;
                 LOG.trace("Transaction begin: txId={}", currentTxId);
             }
             case COMMIT -> {
-                lastProcessedLsn = decoded.lsn();
-                lastCommitTimestamp = decoded.commitTimestamp();
-                commitProgress();
-                LOG.trace("Transaction commit acknowledged: LSN={}", lastProcessedLsn);
+                if (txPublishFailed) {
+                    LOG.error("Transaction ending at LSN {} had failed publications — "
+                            + "not acknowledging; events will replay after restart", decoded.lsn());
+                } else {
+                    lastProcessedLsn = decoded.lsn();
+                    lastCommitTimestamp = decoded.commitTimestamp();
+                    commitProgress();
+                    LOG.trace("Transaction commit acknowledged: LSN={}", lastProcessedLsn);
+                }
                 currentTxId = null;
             }
             case INSERT, UPDATE, DELETE -> {
@@ -144,6 +152,7 @@ public class PostgresLogStreamReader {
                     LOG.debug("Published {} event for {} at LSN {}",
                             decoded.operation(), decoded.tableId(), raw.lsn());
                 } else {
+                    txPublishFailed = true;
                     var failure = (PublishResult.Failure) result;
                     LOG.error("Failed to publish event for {} at LSN {}: {}",
                             decoded.tableId(), raw.lsn(), failure.reason());
@@ -175,13 +184,17 @@ public class PostgresLogStreamReader {
      * - If LSN ack fails after checkpoint save, events may replay — safe (at-least-once).
      */
     private void commitProgress() {
-        saveCheckpoint();
+        if (!saveCheckpoint()) {
+            LOG.warn("Checkpoint save failed at LSN {} — not acknowledging; "
+                    + "events will replay after restart", lastProcessedLsn);
+            return;
+        }
         client.acknowledgeLsn(lastProcessedLsn);
     }
 
-    private void saveCheckpoint() {
+    private boolean saveCheckpoint() {
         if (checkpointManager == null || connectorId == null) {
-            return;
+            return true;  // no checkpointing configured — acknowledge unconditionally
         }
         try {
             Instant ts = lastCommitTimestamp != null ? lastCommitTimestamp : Instant.now();
@@ -192,8 +205,10 @@ public class PostgresLogStreamReader {
             );
             checkpointManager.save(checkpoint);
             LOG.trace("Checkpoint saved: connector={}, LSN={}", connectorId, lastProcessedLsn);
+            return true;
         } catch (Exception e) {
             LOG.warn("Failed to save checkpoint at LSN {}: {}", lastProcessedLsn, e.getMessage());
+            return false;
         }
     }
 

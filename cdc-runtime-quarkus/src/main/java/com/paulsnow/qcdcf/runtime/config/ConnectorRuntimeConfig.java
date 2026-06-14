@@ -123,12 +123,32 @@ public interface ConnectorRuntimeConfig {
         /** Kafka-specific sink configuration. */
         KafkaConfig kafka();
 
+        /** RabbitMQ-specific sink configuration. */
+        RabbitMQConfig rabbitmq();
+
         interface KafkaConfig {
             @WithDefault("localhost:9092")
             String bootstrapServers();
 
             @WithDefault("qcdcf")
             String topicPrefix();
+        }
+
+        interface RabbitMQConfig {
+            @WithDefault("localhost")
+            String host();
+            @WithDefault("5672")
+            int port();
+            @WithDefault("guest")
+            String username();
+            @WithDefault("guest")
+            String password();
+            @WithDefault("/")
+            String virtualHost();
+            @WithDefault("qcdcf")
+            String exchangeName();
+            @WithDefault("topic")
+            String exchangeType();
         }
     }
 }

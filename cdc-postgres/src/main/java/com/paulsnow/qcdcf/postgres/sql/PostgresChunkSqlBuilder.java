@@ -26,7 +26,9 @@ public class PostgresChunkSqlBuilder {
     public String buildChunkQuery(SnapshotChunkPlan plan, List<String> primaryKeyColumns) {
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT * FROM ")
-                .append(plan.tableId().canonicalName());
+                .append(quoteIdentifier(plan.tableId().schema()))
+                .append('.')
+                .append(quoteIdentifier(plan.tableId().table()));
 
         if (plan.lowerBound() != null && !primaryKeyColumns.isEmpty()) {
             sql.append(" WHERE ");
@@ -34,7 +36,7 @@ public class PostgresChunkSqlBuilder {
         }
 
         sql.append(" ORDER BY ");
-        sql.append(String.join(", ", primaryKeyColumns));
+        sql.append(joinQuoted(primaryKeyColumns));
         sql.append(" LIMIT ").append(plan.chunkSize());
 
         return sql.toString();
@@ -42,15 +44,26 @@ public class PostgresChunkSqlBuilder {
 
     private void appendKeysetCondition(StringBuilder sql, List<String> columns, RowKey lowerBound) {
         if (columns.size() == 1) {
-            String col = columns.getFirst();
-            sql.append(col).append(" > ?");
+            sql.append(quoteIdentifier(columns.getFirst())).append(" > ?");
         } else {
             // Composite key: row-value comparison
             sql.append("(");
-            sql.append(String.join(", ", columns));
+            sql.append(joinQuoted(columns));
             sql.append(") > (");
             sql.append("?, ".repeat(columns.size() - 1)).append("?");
             sql.append(")");
         }
+    }
+
+    private static String joinQuoted(List<String> identifiers) {
+        return String.join(", ", identifiers.stream().map(PostgresChunkSqlBuilder::quoteIdentifier).toList());
+    }
+
+    /**
+     * Quotes a SQL identifier, preserving case and protecting reserved words
+     * and special characters. Embedded double quotes are doubled.
+     */
+    private static String quoteIdentifier(String identifier) {
+        return '"' + identifier.replace("\"", "\"\"") + '"';
     }
 }

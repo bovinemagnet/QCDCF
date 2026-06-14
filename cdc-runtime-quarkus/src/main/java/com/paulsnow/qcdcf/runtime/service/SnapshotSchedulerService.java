@@ -16,7 +16,9 @@ import java.util.List;
  * Triggers periodic snapshots for all published tables on a configurable cron schedule.
  * <p>
  * Skips execution if a snapshot is already running or if scheduling is disabled.
- * Discovers tables from the PostgreSQL publication and triggers each sequentially.
+ * Discovers tables from the PostgreSQL publication and snapshots each sequentially,
+ * blocking until one completes before starting the next. A failed table is logged
+ * and the run continues with the remaining tables.
  *
  * @author Paul Snow
  * @since 0.0.0
@@ -48,33 +50,34 @@ public class SnapshotSchedulerService {
 
         LOG.info("Scheduled snapshot starting — discovering published tables");
 
+        String publicationName = config.source().publicationName();
+        List<TableId> tables;
         try (Connection conn = dataSource.getConnection()) {
-            var metadataReader = new PostgresTableMetadataReader();
-            List<TableId> tables = metadataReader.discoverPublicationTables(
-                    conn, config.source().publicationName());
-
-            if (tables.isEmpty()) {
-                LOG.warnf("Scheduled snapshot — no tables found in publication '%s'",
-                        config.source().publicationName());
-                return;
-            }
-
-            LOG.infof("Scheduled snapshot — %d tables to snapshot", tables.size());
-
-            for (TableId tableId : tables) {
-                LOG.infof("Scheduled snapshot — triggering for %s", tableId);
-                connectorService.triggerSnapshot(tableId.canonicalName());
-
-                // Wait for this snapshot to complete before starting the next
-                while (connectorService.isSnapshotRunning()) {
-                    Thread.sleep(1000);
-                }
-            }
-
-            LOG.info("Scheduled snapshot complete — all tables processed");
-
+            tables = new PostgresTableMetadataReader().discoverPublicationTables(conn, publicationName);
         } catch (Exception e) {
-            LOG.errorf(e, "Scheduled snapshot failed: %s", e.getMessage());
+            LOG.errorf(e, "Scheduled snapshot failed during table discovery: %s", e.getMessage());
+            return;
+        }
+
+        if (tables.isEmpty()) {
+            LOG.warnf("Scheduled snapshot — no tables found in publication '%s'", publicationName);
+            return;
+        }
+
+        LOG.infof("Scheduled snapshot — %d tables to snapshot", tables.size());
+
+        int failures = 0;
+        for (TableId tableId : tables) {
+            LOG.infof("Scheduled snapshot — running for %s", tableId);
+            if (!connectorService.runSnapshotBlocking(tableId)) {
+                failures++;
+            }
+        }
+
+        if (failures == 0) {
+            LOG.info("Scheduled snapshot complete — all tables processed");
+        } else {
+            LOG.warnf("Scheduled snapshot complete — %d of %d tables failed", failures, tables.size());
         }
     }
 }

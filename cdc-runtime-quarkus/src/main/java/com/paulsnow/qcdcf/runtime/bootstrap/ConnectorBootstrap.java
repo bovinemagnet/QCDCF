@@ -71,7 +71,7 @@ public class ConnectorBootstrap {
 
     private volatile ConnectorStatus status = ConnectorStatus.STOPPED;
     private volatile Instant lastSuccessfulConnection;
-    private PostgresLogStreamReader reader;
+    private volatile PostgresLogStreamReader reader;
     private ResilientCheckpointRepository resilientCheckpoint;
 
     public ConnectorBootstrap(ConnectorRuntimeConfig config) {
@@ -249,7 +249,7 @@ public class ConnectorBootstrap {
      * Request the connector to stop (pause).
      * Stops the WAL reader and sets the status to STOPPED.
      */
-    public void requestStop() {
+    public synchronized void requestStop() {
         LOG.infof("Stop requested for connector '%s'", config.connector().id());
         if (reader != null) {
             reader.stop();
@@ -261,7 +261,7 @@ public class ConnectorBootstrap {
      * Request the connector to start (resume).
      * Rebuilds the pipeline and starts a new reader thread.
      */
-    public void requestStart() {
+    public synchronized void requestStart() {
         if (status == ConnectorStatus.RUNNING || status == ConnectorStatus.STARTING) {
             LOG.warnf("Connector '%s' is already %s — ignoring start request", config.connector().id(), status);
             return;

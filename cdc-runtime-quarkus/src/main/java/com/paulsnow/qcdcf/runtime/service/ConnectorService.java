@@ -43,6 +43,8 @@ public class ConnectorService {
 
     private static final Logger LOG = Logger.getLogger(ConnectorService.class);
 
+    private static final String STATUS_RUNNING = "RUNNING";
+
     public record SnapshotState(String table, String status, long rowCount) {
         static final SnapshotState NONE = new SnapshotState(null, "NONE", 0);
     }
@@ -110,7 +112,18 @@ public class ConnectorService {
      */
     public Map<String, Object> triggerSnapshot(String tableName) {
         LOG.infof("Snapshot requested for table '%s' on connector '%s'", tableName, bootstrap.connectorId());
-        snapshotState.set(new SnapshotState(tableName, "RUNNING", 0));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("connectorId", bootstrap.connectorId());
+        result.put("tableName", tableName);
+
+        if (!tryStartSnapshot(tableName)) {
+            LOG.warnf("Snapshot request for '%s' rejected — a snapshot is already running for '%s'",
+                    tableName, snapshotState.get().table());
+            result.put("snapshotStatus", snapshotState.get().status());
+            result.put("message", "Snapshot already running; request ignored");
+            return result;
+        }
 
         // Parse table name
         String schema = "public";
@@ -123,32 +136,68 @@ public class ConnectorService {
         TableId tableId = new TableId(schema, table);
 
         // Run snapshot on background thread to avoid blocking the REST call
-        executor.submit(() -> executeSnapshot(tableId));
+        executor.submit(() -> {
+            executeSnapshot(tableId);
+        });
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("connectorId", bootstrap.connectorId());
-        result.put("tableName", tableName);
         result.put("snapshotStatus", snapshotState.get().status());
         result.put("message", "Snapshot started");
         return result;
     }
 
-    private void executeSnapshot(TableId tableId) {
+    /**
+     * Runs a snapshot for the given table synchronously, blocking until it
+     * completes or fails. Used by the scheduler to run tables sequentially.
+     *
+     * @param tableId the table to snapshot
+     * @return {@code true} if the snapshot was started and completed successfully,
+     *         {@code false} if it failed or another snapshot is already running
+     */
+    public boolean runSnapshotBlocking(TableId tableId) {
+        if (!tryStartSnapshot(tableId.canonicalName())) {
+            LOG.warnf("Blocking snapshot for '%s' rejected — a snapshot is already running for '%s'",
+                    tableId, snapshotState.get().table());
+            return false;
+        }
+        return executeSnapshot(tableId);
+    }
+
+    private boolean executeSnapshot(TableId tableId) {
         snapshotMonitor.recordSnapshotStarted(tableId.canonicalName());
         try {
             long rows = executeSnapshotWithRetry(tableId);
             snapshotState.set(new SnapshotState(tableId.canonicalName(), "COMPLETE (" + rows + " rows)", rows));
             snapshotMonitor.recordSnapshotCompleted(tableId.canonicalName(), rows);
             LOG.infof("Snapshot complete for %s: %d rows", tableId, rows);
+            return true;
         } catch (Exception e) {
-            snapshotState.set(new SnapshotState(snapshotState.get().table(), "FAILED: " + e.getMessage(), 0));
+            snapshotState.set(new SnapshotState(tableId.canonicalName(), "FAILED: " + e.getMessage(), 0));
             snapshotMonitor.recordSnapshotFailed(tableId.canonicalName(), e.getMessage());
             LOG.errorf(e, "Snapshot failed for %s after retries", tableId);
+            return false;
         }
     }
 
     public boolean isSnapshotRunning() {
-        return "RUNNING".equals(snapshotState.get().status());
+        return STATUS_RUNNING.equals(snapshotState.get().status());
+    }
+
+    /**
+     * Atomically transitions the snapshot state to RUNNING for the given table,
+     * unless a snapshot is already in progress.
+     *
+     * @return {@code true} if the state was claimed, {@code false} if busy
+     */
+    private boolean tryStartSnapshot(String tableName) {
+        while (true) {
+            SnapshotState current = snapshotState.get();
+            if (STATUS_RUNNING.equals(current.status())) {
+                return false;
+            }
+            if (snapshotState.compareAndSet(current, new SnapshotState(tableName, STATUS_RUNNING, 0))) {
+                return true;
+            }
+        }
     }
 
     @Retry(maxRetries = 3, delay = 2000, retryOn = {SourceReadException.class, SQLException.class})

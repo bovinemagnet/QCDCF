@@ -45,9 +45,13 @@ public class ResilientCheckpointRepository implements CheckpointManager {
                 LOG.warn("Circuit breaker open — skipping checkpoint save for connector '{}'", checkpoint.connectorId());
                 return;
             }
+            // Only one thread may claim the half-open probe; others keep skipping.
+            // Failure count is NOT reset here — a failed probe re-opens the circuit immediately.
+            if (!circuitOpenedAt.compareAndSet(openedAt, null)) {
+                LOG.warn("Circuit breaker open — skipping checkpoint save for connector '{}'", checkpoint.connectorId());
+                return;
+            }
             LOG.info("Circuit breaker half-open — attempting checkpoint save");
-            circuitOpenedAt.set(null);
-            consecutiveFailures.set(0);
         }
 
         try {

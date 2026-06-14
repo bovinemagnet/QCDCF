@@ -51,6 +51,41 @@ class RetryingEventSinkTest {
         assertThat(result.isSuccess()).isFalse();
     }
 
+    @Test
+    void zeroMaxRetriesStillAttemptsOnce() {
+        AtomicInteger attempts = new AtomicInteger(0);
+        EventSink delegate = new InMemoryEventSink() {
+            @Override
+            public PublishResult publish(ChangeEnvelope event) {
+                attempts.incrementAndGet();
+                return new PublishResult.Success(1);
+            }
+        };
+
+        var retrying = new RetryingEventSink(delegate, 0, 0);
+        PublishResult result = retrying.publish(sampleEvent());
+
+        assertThat(result).isNotNull();
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    void closeIsDelegatedToWrappedSink() throws Exception {
+        AtomicInteger closed = new AtomicInteger(0);
+        EventSink delegate = new InMemoryEventSink() {
+            @Override
+            public void close() {
+                closed.incrementAndGet();
+            }
+        };
+
+        var retrying = new RetryingEventSink(delegate, 3, 0);
+        retrying.close();
+
+        assertThat(closed.get()).isEqualTo(1);
+    }
+
     private ChangeEnvelope sampleEvent() {
         return new ChangeEnvelope(
                 UUID.randomUUID(), "test", new TableId("public", "customer"),
